@@ -1,10 +1,8 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import CryptoJS from 'crypto-js'; // NEW: The Military-Grade Encryption Engine
-import { Audio } from 'expo-av';
+ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from 'firebase/firestore';
 import React, { useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
@@ -21,6 +19,9 @@ import {
     View
 } from 'react-native';
 import { db } from '../firebaseConfig';
+
+// NEW: Importing our military-grade cryptography engine
+import { decryptMessage, encryptMessage } from './cryptoEngine';
 
 export default function ChatScreen() {
   const router = useRouter();
@@ -39,35 +40,18 @@ export default function ChatScreen() {
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
-
   const [isBurnerMode, setIsBurnerMode] = useState(false);
   const [revealedMessages, setRevealedMessages] = useState<Record<string, boolean>>({});
 
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-
-  // NEW: Dynamic Secret Key Generator (Unique to this exact friendship)
-  const getSecretKey = () => {
-    if (!myUserId || !friendId) return 'FALLBACK_KEY';
-    return [myUserId, friendId].sort().join('_') + '_KuKaVault2026';
-  };
-
-  // NEW: The Decryption Engine
-  const decryptText = (cipherText: string) => {
-    if (!cipherText) return '';
-    try {
-      const bytes = CryptoJS.AES.decrypt(cipherText, getSecretKey());
-      const originalText = bytes.toString(CryptoJS.enc.Utf8);
-      return originalText || '🔒 [Unreadable Data]'; 
-    } catch (e) {
-      return '🔒 [Encrypted Data]';
-    }
-  };
+  // NEW: State to hold the cryptographic keys
+  const [myPrivateKey, setMyPrivateKey] = useState<string | null>(null);
+  const [myPublicKey, setMyPublicKey] = useState<string | null>(null);
+  const [friendPublicKey, setFriendPublicKey] = useState<string | null>(null);
 
   useEffect(() => {
     let unsubscribe: any;
 
-    const loadChat = async () => {
+    const loadChatAndKeys = async () => {
       const storedId = await AsyncStorage.getItem('currentUserId');
       if (!storedId) {
         router.replace('/login');
@@ -75,6 +59,23 @@ export default function ChatScreen() {
       }
       setMyUserId(storedId);
 
+      // 1. Load your Private Key from local offline storage
+      const storedPrivateKey = await AsyncStorage.getItem('privateKey');
+      setMyPrivateKey(storedPrivateKey);
+
+      // 2. Fetch your Public Key from the database
+      const myUserSnap = await getDoc(doc(db, 'users', storedId));
+      if (myUserSnap.exists()) {
+        setMyPublicKey(myUserSnap.data().publicKey);
+      }
+
+      // 3. Fetch your Friend's Public Key from the database
+      const friendSnap = await getDoc(doc(db, 'users', friendId as string));
+      if (friendSnap.exists()) {
+        setFriendPublicKey(friendSnap.data().publicKey);
+      }
+
+      // 4. Load the chat history
       const chatRoomId = [storedId, friendId].sort().join('_');
       const messagesRef = collection(db, 'chats', chatRoomId, 'messages');
       const q = query(messagesRef, orderBy('createdAt', 'asc'));
@@ -88,7 +89,7 @@ export default function ChatScreen() {
       });
     };
 
-    loadChat();
+    loadChatAndKeys();
 
     return () => {
       if (unsubscribe) unsubscribe();
@@ -97,19 +98,13 @@ export default function ChatScreen() {
 
   const handleSendMessage = async () => {
     if (!inputText.trim()) return;
-
-    // NEW: Encrypt the text before it leaves your device
-    const encryptedText = CryptoJS.AES.encrypt(inputText, getSecretKey()).toString();
-    
-    let encryptedReplyData = null;
-    if (replyingTo) {
-      // Encrypt the reply preview so that isn't leaked either
-      encryptedReplyData = { 
-        id: replyingTo.id, 
-        text: CryptoJS.AES.encrypt(replyingTo.text, getSecretKey()).toString() 
-      };
+    if (!friendPublicKey || !myPublicKey) {
+      alert("❌ Cannot establish a secure tunnel. Keys are missing.");
+      return;
     }
 
+    const rawText = inputText;
+    const replyData = replyingTo ? { id: replyingTo.id, text: replyingTo.text } : null;
     const burnerFlag = isBurnerMode; 
     
     setInputText(''); 
@@ -117,14 +112,20 @@ export default function ChatScreen() {
     setShowAttachmentMenu(false);
 
     try {
+      // NEW: The Double-Lock Protocol
+      const textForFriend = encryptMessage(rawText, friendPublicKey);
+      const textForMe = encryptMessage(rawText, myPublicKey);
+
       const chatRoomId = [myUserId, friendId].sort().join('_');
       const messagesRef = collection(db, 'chats', chatRoomId, 'messages');
       
       await addDoc(messagesRef, {
         senderId: myUserId,
-        text: encryptedText, // Pushing pure cipher text to Firebase
+        textForFriend: textForFriend, // Locked with their key
+        textForMe: textForMe,         // Locked with your key
+        text: null,                   // Permanently removing plain text
         imageBase64: null, 
-        replyTo: encryptedReplyData, 
+        replyTo: replyData, 
         pinned: false,
         isBurner: burnerFlag,
         createdAt: serverTimestamp()
@@ -132,90 +133,6 @@ export default function ChatScreen() {
     } catch (error) {
       console.error("Error sending message:", error);
       alert("❌ Message failed to send.");
-    }
-  };
-
-  const startRecording = async () => {
-    try {
-      const permission = await Audio.requestPermissionsAsync();
-      if (permission.status === 'granted') {
-        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-        
-        const { recording } = await Audio.Recording.createAsync(
-          Audio.RecordingOptionsPresets.HIGH_QUALITY
-        );
-        
-        setRecording(recording);
-        setIsRecording(true);
-      } else {
-        alert('❌ Microphone permission is required.');
-      }
-    } catch (err) {
-      console.error('Failed to start recording', err);
-    }
-  };
-
-  const stopAndSendRecording = async () => {
-    try {
-      if (!recording) return;
-      setIsRecording(false);
-      await recording.stopAndUnloadAsync();
-      
-      const uri = recording.getURI();
-      setRecording(null);
-
-      if (uri) {
-        uploadVoiceNote(uri);
-      }
-    } catch (error) {
-      console.error('Failed to stop recording', error);
-    }
-  };
-
-  const uploadVoiceNote = async (uri: string) => {
-    setIsUploading(true);
-    setUploadStatus('Encrypting Voice Note...');
-    const burnerFlag = isBurnerMode;
-
-    try {
-      const data = new FormData();
-      if (Platform.OS === 'web') {
-        const response = await fetch(uri);
-        const blob = await response.blob();
-        data.append('file', blob as any);
-      } else {
-        data.append('file', { uri: uri, name: `voicenote_${Date.now()}.m4a`, type: 'audio/m4a' } as any);
-      }
-      data.append('upload_preset', 'kukachat');
-
-      const response = await fetch('https://api.cloudinary.com/v1_1/ie1p5v4v/auto/upload', {
-        method: 'POST',
-        body: data,
-      });
-
-      const cloudData = await response.json();
-
-      if (cloudData.secure_url) {
-        const chatRoomId = [myUserId, friendId].sort().join('_');
-        await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
-          senderId: myUserId,
-          text: '', 
-          mediaUrl: cloudData.secure_url, 
-          mediaType: 'audio',
-          mediaName: '🎙️ Voice Note',
-          replyTo: null,
-          pinned: false,
-          isBurner: burnerFlag,
-          createdAt: serverTimestamp()
-        });
-      } else {
-        alert('❌ Cloudinary upload failed.');
-      }
-    } catch (error) {
-      alert('❌ Error sending voice note.');
-    } finally {
-      setIsUploading(false);
-      setUploadStatus('');
     }
   };
 
@@ -234,7 +151,8 @@ export default function ChatScreen() {
         const chatRoomId = [myUserId, friendId].sort().join('_');
         await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
           senderId: myUserId,
-          text: '', 
+          textForFriend: null,
+          textForMe: null, 
           imageBase64: result.assets[0].base64,
           replyTo: null,
           pinned: false,
@@ -282,7 +200,8 @@ export default function ChatScreen() {
         const chatRoomId = [myUserId, friendId].sort().join('_');
         await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
           senderId: myUserId,
-          text: '', 
+          textForFriend: null,
+          textForMe: null,
           mediaUrl: cloudData.secure_url, 
           mediaType: type,
           mediaName: asset.name,
@@ -332,7 +251,7 @@ export default function ChatScreen() {
 
   const handleReplyClick = (msg: any, decryptedText: string) => {
     const replyText = decryptedText ? decryptedText : msg.mediaName ? `📁 ${msg.mediaName}` : '📷 Photo';
-    setReplyingTo({ id: msg.id, text: replyText }); // Storing plaintext in state for the preview banner
+    setReplyingTo({ id: msg.id, text: replyText });
     setSelectedMessageId(null);
     setTimeout(() => { textInputRef.current?.focus(); }, 100);
   };
@@ -388,16 +307,23 @@ export default function ChatScreen() {
           onScrollBeginDrag={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
         >
           {messages.length === 0 ? (
-            <Text style={styles.emptyText}>This is the start of your encrypted conversation with {friendName}.</Text>
+            <Text style={styles.emptyText}>This is the start of your secure conversation with {friendName}.</Text>
           ) : (
             messages.map((msg) => {
               const isMe = msg.senderId === myUserId;
               const isSelected = selectedMessageId === msg.id;
               const isHiddenBurner = msg.isBurner && !isMe && !revealedMessages[msg.id];
-              
-              // NEW: Instantly decrypt the text for the screen UI
-              const plainText = decryptText(msg.text);
-              const plainReplyText = msg.replyTo ? decryptText(msg.replyTo.text) : '';
+
+              // NEW: The Decryption Engine Rendering
+              let displayMessage = '';
+              if (msg.textForMe && msg.textForFriend && myPrivateKey) {
+                // If you sent it, decrypt the 'ForMe' version. If they sent it, decrypt the 'ForFriend' version.
+                const encryptedCipher = isMe ? msg.textForMe : msg.textForFriend;
+                displayMessage = decryptMessage(encryptedCipher, myPrivateKey) || '🔒 [Decryption Failed]';
+              } else if (msg.text) {
+                // Fallback just in case you have old plain-text messages in your history
+                displayMessage = msg.text;
+              }
 
               return (
                 <View key={msg.id} style={styles.messageBlock}>
@@ -424,7 +350,7 @@ export default function ChatScreen() {
                         <>
                           {msg.replyTo && (
                             <View style={styles.embeddedReply}>
-                              <Text style={styles.embeddedReplyText} numberOfLines={1}>{plainReplyText}</Text>
+                              <Text style={styles.embeddedReplyText} numberOfLines={1}>{msg.replyTo.text}</Text>
                             </View>
                           )}
 
@@ -439,9 +365,9 @@ export default function ChatScreen() {
                             </TouchableOpacity>
                           )}
 
-                          {plainText ? (
+                          {displayMessage ? (
                             <View style={styles.messageTextRow}>
-                              <Text style={styles.messageText}>{plainText}</Text>
+                              <Text style={styles.messageText}>{displayMessage}</Text>
                               {msg.pinned && <Text style={styles.pinIcon}>📌</Text>}
                               {msg.isBurner && <Text style={styles.pinIcon}>🔥</Text>}
                             </View>
@@ -463,7 +389,7 @@ export default function ChatScreen() {
 
                   {isSelected && !isHiddenBurner && (
                     <View style={[styles.optionsMenu, isMe ? styles.optionsMenuMe : styles.optionsMenuThem]}>
-                      <TouchableOpacity style={styles.optionButton} onPress={() => handleReplyClick(msg, plainText)}>
+                      <TouchableOpacity style={styles.optionButton} onPress={() => handleReplyClick(msg, displayMessage)}>
                         <Text style={styles.optionText}>Reply</Text>
                       </TouchableOpacity>
                       <TouchableOpacity style={styles.optionButton} onPress={() => handlePinToggle(msg.id, msg.pinned)}>
@@ -491,13 +417,6 @@ export default function ChatScreen() {
             </View>
           )}
 
-          {isRecording && (
-            <View style={styles.recordingBanner}>
-              <View style={styles.recordingDot} />
-              <Text style={styles.recordingText}>Recording Voice Note...</Text>
-            </View>
-          )}
-
           {showAttachmentMenu && (
             <View style={styles.attachmentMenu}>
               <TouchableOpacity style={styles.attachmentMenuItem} onPress={handleSendImage}>
@@ -510,11 +429,11 @@ export default function ChatScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('audio')}>
                 <Text style={styles.attachmentMenuIcon}>🎵</Text>
-                <Text style={styles.attachmentMenuText}>Audio File</Text>
+                <Text style={styles.attachmentMenuText}>Audio</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('file')}>
                 <Text style={styles.attachmentMenuIcon}>📄</Text>
-                <Text style={styles.attachmentMenuText}>Document</Text>
+                <Text style={styles.attachmentMenuText}>File</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -549,19 +468,9 @@ export default function ChatScreen() {
               <Text style={styles.burnerToggleText}>🔥</Text>
             </TouchableOpacity>
 
-            {inputText.trim().length > 0 ? (
-              <TouchableOpacity style={styles.sendButton} onPress={handleSendMessage}>
-                <Text style={styles.sendButtonText}>Send</Text>
-              </TouchableOpacity>
-            ) : isRecording ? (
-              <TouchableOpacity style={styles.stopMicButton} onPress={stopAndSendRecording}>
-                <Text style={styles.micButtonText}>🛑</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={styles.micButton} onPress={startRecording}>
-                <Text style={styles.micButtonText}>🎤</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity style={styles.sendButton} onPress={handleSendMessage}>
+              <Text style={styles.sendButtonText}>Send</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -604,7 +513,7 @@ const styles = StyleSheet.create({
   pinIcon: { fontSize: 12, marginLeft: 6, marginBottom: 2 },
   chatImage: { width: 220, height: 220, borderRadius: 10, marginBottom: 5 },
   
-  mediaContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.25)', padding: 10, borderRadius: 10, marginBottom: 5, minWidth: 150, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  mediaContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.25)', padding: 10, borderRadius: 10, marginBottom: 5, width: 200, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   mediaIcon: { fontSize: 24, marginRight: 10 },
   mediaNameText: { color: '#FFF', fontSize: 13, flex: 1, textDecorationLine: 'underline' },
 
@@ -626,10 +535,6 @@ const styles = StyleSheet.create({
   uploadBanner: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#334155', paddingVertical: 10 },
   uploadBannerText: { color: '#FFF', fontSize: 14, marginLeft: 10, fontWeight: 'bold' },
 
-  recordingBanner: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#450a0a', paddingVertical: 10 },
-  recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#EF4444', marginRight: 10 },
-  recordingText: { color: '#FECACA', fontSize: 14, fontWeight: 'bold', fontStyle: 'italic' },
-
   attachmentMenu: { position: 'absolute', bottom: 85, left: 15, backgroundColor: '#1E293B', borderRadius: 16, padding: 10, borderWidth: 1, borderColor: '#334155', width: 200, zIndex: 100, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 10 },
   attachmentMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 15, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   attachmentMenuIcon: { fontSize: 20, marginRight: 15 },
@@ -650,7 +555,4 @@ const styles = StyleSheet.create({
 
   sendButton: { marginLeft: 10, backgroundColor: '#6366F1', borderRadius: 20, paddingHorizontal: 20, paddingVertical: 12, justifyContent: 'center', alignItems: 'center', height: 45 },
   sendButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
-  micButton: { marginLeft: 10, backgroundColor: '#334155', width: 45, height: 45, borderRadius: 22.5, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#475569' },
-  stopMicButton: { marginLeft: 10, backgroundColor: '#EF4444', width: 45, height: 45, borderRadius: 22.5, justifyContent: 'center', alignItems: 'center' },
-  micButtonText: { fontSize: 20 },
 });
