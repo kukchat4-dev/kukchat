@@ -2,11 +2,12 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { addDoc, collection, doc, getDoc, onSnapshot, query, serverTimestamp, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, query, serverTimestamp, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Image,
+    KeyboardAvoidingView,
     Platform,
     SafeAreaView,
     ScrollView,
@@ -21,26 +22,22 @@ import { db } from '../firebaseConfig';
 export default function HomeScreen() {
   const router = useRouter();
   
-  // --- STATE MANAGEMENT ---
   const [myUserId, setMyUserId] = useState<string | null>(null);
   const [myName, setMyName] = useState<string>('Vault User');
   
-  // Tabs: Chats (Default), Feed, Post, Search
   const [activeTab, setActiveTab] = useState<'Chats' | 'Feed' | 'Post' | 'Search'>('Chats');
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Database States
   const [friends, setFriends] = useState<any[]>([]);
   const [feedPosts, setFeedPosts] = useState<any[]>([]);
   const [isLoadingFriends, setIsLoadingFriends] = useState(true);
 
-  // Post Creation States
   const [postText, setPostText] = useState('');
   const [postImageBase64, setPostImageBase64] = useState<string | null>(null);
   const [selectedViewers, setSelectedViewers] = useState<string[]>([]);
   const [isPosting, setIsPosting] = useState(false);
 
-  // --- HARDCODED DARK MODE THEME ---
+  // Hardcoded Dark Theme
   const theme = {
     bg: '#000000',
     cardBg: '#121212',
@@ -58,7 +55,6 @@ export default function HomeScreen() {
     textShadowRadius: 1,
   });
 
-  // --- DATABASE SYNC ---
   useEffect(() => {
     const initializeNetwork = async () => {
       const storedId = await AsyncStorage.getItem('currentUserId');
@@ -68,7 +64,6 @@ export default function HomeScreen() {
       }
       setMyUserId(storedId);
 
-      // 1. Fetch My Data & My Friends (For Inbox & Post Checklist)
       try {
         const myUserRef = doc(db, 'users', storedId);
         const myUserSnap = await getDoc(myUserRef);
@@ -92,7 +87,6 @@ export default function HomeScreen() {
         setIsLoadingFriends(false);
       }
 
-      // 2. Realtime Listener for the Feed (Only posts where YOU are in the allowedViewers array)
       const postsRef = collection(db, 'posts');
       const q = query(postsRef, where('allowedViewers', 'array-contains', storedId));
       
@@ -100,7 +94,6 @@ export default function HomeScreen() {
         const posts: any[] = [];
         snapshot.forEach((doc) => posts.push({ id: doc.id, ...doc.data() }));
         
-        // Sort newest first client-side to avoid Firebase Index requirements
         posts.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
         setFeedPosts(posts);
       });
@@ -138,32 +131,52 @@ export default function HomeScreen() {
     
     setIsPosting(true);
     try {
+      let secureImageUrl = null;
+
+      if (postImageBase64) {
+        const data = new FormData();
+        data.append('file', `data:image/jpeg;base64,${postImageBase64}`);
+        data.append('upload_preset', 'kukachat'); 
+
+        const response = await fetch('https://api.cloudinary.com/v1_1/ie1p5v4v/auto/upload', {
+          method: 'POST',
+          body: data,
+        });
+        const cloudData = await response.json();
+        secureImageUrl = cloudData.secure_url;
+      }
+
       const postData = {
         authorId: myUserId,
         authorName: myName,
         text: postText.trim(),
-        imageBase64: postImageBase64,
-        allowedViewers: [myUserId, ...selectedViewers], // You + Selected Friends
+        imageUrl: secureImageUrl, 
+        allowedViewers: [myUserId, ...selectedViewers], 
         createdAt: serverTimestamp()
       };
       
       await addDoc(collection(db, 'posts'), postData);
       
-      // Reset and jump to feed
       setPostText('');
       setPostImageBase64(null);
       setSelectedViewers([]);
       setActiveTab('Feed');
     } catch (error) {
-      alert("❌ Failed to create targeted post.");
+      alert("❌ Failed to broadcast post to the cloud.");
     } finally {
       setIsPosting(false);
     }
   };
 
-  // --- TAB RENDERERS ---
+  const handleDeletePost = async (postId: string) => {
+    try {
+      await deleteDoc(doc(db, 'posts', postId));
+    } catch (error) {
+      alert("❌ Failed to delete post.");
+    }
+  };
 
-  // 1. THE INBOX (Replaces the old Home tab)
+  // --- TAB RENDERERS ---
   const renderChats = () => (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
       <Text style={[styles.sectionTitle, { color: theme.text }]}>Encrypted Vaults</Text>
@@ -179,6 +192,7 @@ export default function HomeScreen() {
         friends.map((friend) => (
           <TouchableOpacity 
             key={friend.id} 
+            activeOpacity={0.7}
             style={styles.contactRow}
             onPress={() => router.push({ pathname: '/chat', params: { friendId: friend.id, friendName: friend.name || 'Unknown Vault' } })}
           >
@@ -200,79 +214,80 @@ export default function HomeScreen() {
     </ScrollView>
   );
 
-  // 2. TARGETED POST CREATOR (Snapchat Style)
   const renderPostCreator = () => (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-      <Text style={[styles.sectionTitle, { color: theme.text }]}>Create Secure Post</Text>
-      
-      <View style={[styles.postInputBox, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
-        <TextInput
-          style={[styles.postTextInput, { color: theme.text }]}
-          placeholder="What's happening?"
-          placeholderTextColor={theme.subText}
-          multiline
-          value={postText}
-          onChangeText={setPostText}
-        />
-        {postImageBase64 && (
-          <View style={styles.attachedImageContainer}>
-            <Image source={{ uri: `data:image/jpeg;base64,${postImageBase64}` }} style={styles.attachedImage} />
-            <TouchableOpacity style={styles.removeImageBtn} onPress={() => setPostImageBase64(null)}>
-              <Ionicons name="close-circle" size={24} color="#FFF" />
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{flex: 1}}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Create Secure Post</Text>
+        
+        <View style={[styles.postInputBox, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
+          <TextInput
+            style={[styles.postTextInput, { color: theme.text }]}
+            placeholder="What's happening?"
+            placeholderTextColor={theme.subText}
+            multiline
+            value={postText}
+            onChangeText={setPostText}
+          />
+          {postImageBase64 && (
+            <View style={styles.attachedImageContainer}>
+              <Image source={{ uri: `data:image/jpeg;base64,${postImageBase64}` }} style={styles.attachedImage} />
+              <TouchableOpacity style={styles.removeImageBtn} onPress={() => setPostImageBase64(null)}>
+                <Ionicons name="close-circle" size={24} color="#FFF" />
+              </TouchableOpacity>
+            </View>
+          )}
+          <View style={styles.postInputActions}>
+            <TouchableOpacity onPress={handlePickPostImage}>
+              <Ionicons name="image-outline" size={28} color={theme.text} style={get3DStyle()} />
             </TouchableOpacity>
           </View>
+        </View>
+
+        <Text style={[styles.sectionTitle, { color: theme.text, marginTop: 25, fontSize: 14 }]}>Targeted Viewers (Checklist)</Text>
+        <Text style={{ color: theme.subText, fontSize: 12, marginBottom: 15 }}>Select exactly who is allowed to decrypt and view this post.</Text>
+
+        {friends.length === 0 ? (
+          <Text style={{ color: theme.subText, fontStyle: 'italic' }}>You need to add friends before you can target a post.</Text>
+        ) : (
+          <View style={[styles.checklistContainer, { borderColor: theme.border }]}>
+            {friends.map(friend => {
+              const isSelected = selectedViewers.includes(friend.id);
+              return (
+                <TouchableOpacity 
+                  key={friend.id}
+                  activeOpacity={0.7} 
+                  style={[styles.checklistItem, { borderBottomColor: theme.border }]}
+                  onPress={() => toggleViewer(friend.id)}
+                >
+                  <Text style={[styles.checklistName, { color: isSelected ? theme.accent : theme.text }]}>{friend.name}</Text>
+                  <Ionicons 
+                    name={isSelected ? "checkmark-circle" : "ellipse-outline"} 
+                    size={24} 
+                    color={isSelected ? theme.accent : theme.subText} 
+                  />
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         )}
-        <View style={styles.postInputActions}>
-          <TouchableOpacity onPress={handlePickPostImage}>
-            <Ionicons name="image-outline" size={28} color={theme.text} style={get3DStyle()} />
-          </TouchableOpacity>
-        </View>
-      </View>
 
-      <Text style={[styles.sectionTitle, { color: theme.text, marginTop: 25, fontSize: 14 }]}>Targeted Viewers (Checklist)</Text>
-      <Text style={{ color: theme.subText, fontSize: 12, marginBottom: 15 }}>Select exactly who is allowed to decrypt and view this post.</Text>
-
-      {friends.length === 0 ? (
-        <Text style={{ color: theme.subText, fontStyle: 'italic' }}>You need to add friends before you can target a post.</Text>
-      ) : (
-        <View style={[styles.checklistContainer, { borderColor: theme.border }]}>
-          {friends.map(friend => {
-            const isSelected = selectedViewers.includes(friend.id);
-            return (
-              <TouchableOpacity 
-                key={friend.id} 
-                style={[styles.checklistItem, { borderBottomColor: theme.border }]}
-                onPress={() => toggleViewer(friend.id)}
-              >
-                <Text style={[styles.checklistName, { color: isSelected ? theme.accent : theme.text }]}>{friend.name}</Text>
-                <Ionicons 
-                  name={isSelected ? "checkmark-circle" : "ellipse-outline"} 
-                  size={24} 
-                  color={isSelected ? theme.accent : theme.subText} 
-                />
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
-
-      <TouchableOpacity 
-        style={[styles.submitPostBtn, { backgroundColor: (!postText && !postImageBase64) ? theme.border : theme.accent }]}
-        onPress={handleCreatePost}
-        disabled={(!postText && !postImageBase64) || isPosting}
-      >
-        {isPosting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitPostBtnText}>Broadcast Post</Text>}
-      </TouchableOpacity>
-    </ScrollView>
+        <TouchableOpacity 
+          activeOpacity={0.8}
+          style={[styles.submitPostBtn, { backgroundColor: (!postText && !postImageBase64) ? theme.border : theme.accent }]}
+          onPress={handleCreatePost}
+          disabled={(!postText && !postImageBase64) || isPosting}
+        >
+          {isPosting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitPostBtnText}>Broadcast Post</Text>}
+        </TouchableOpacity>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 
-  // 3. THE FEED (Cleaned of fake data)
   const renderFeed = () => (
     <ScrollView style={styles.mainScroll} showsVerticalScrollIndicator={false}>
-      {/* CLEARED STORIES SECTION (Only You) */}
       <View style={[styles.storiesContainer, { borderBottomColor: theme.border, backgroundColor: theme.bg }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storiesScroll}>
-          <TouchableOpacity style={styles.storyItem}>
+          <TouchableOpacity style={styles.storyItem} activeOpacity={0.8}>
             <View style={[styles.storyRing, { borderColor: theme.storyRing }]}>
               <View style={[styles.storyAvatarContainer, { backgroundColor: theme.border }]}>
                 <Text style={[styles.dummyAvatarText, { color: theme.subText }]}>{myName.charAt(0)}</Text>
@@ -286,7 +301,6 @@ export default function HomeScreen() {
         </ScrollView>
       </View>
 
-      {/* DYNAMIC POSTS SECTION */}
       {feedPosts.length === 0 ? (
         <View style={styles.emptyState}>
           <Ionicons name="images-outline" size={50} color={theme.border} style={{ marginBottom: 15 }} />
@@ -295,6 +309,7 @@ export default function HomeScreen() {
       ) : (
         feedPosts.map((post) => (
           <View key={post.id} style={[styles.postContainer, { backgroundColor: theme.bg }]}>
+            
             <View style={styles.postHeader}>
               <View style={styles.postHeaderLeft}>
                 <View style={[styles.postAvatar, { backgroundColor: theme.border }]}>
@@ -302,12 +317,23 @@ export default function HomeScreen() {
                 </View>
                 <Text style={[styles.postAuthor, { color: theme.text }]}>{post.authorName}</Text>
               </View>
-              <Ionicons name="lock-closed" size={14} color={theme.subText} />
+              
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="lock-closed" size={14} color={theme.subText} style={{ marginRight: 15 }} />
+                {post.authorId === myUserId && (
+                  <TouchableOpacity onPress={() => handleDeletePost(post.id)}>
+                    <Ionicons name="trash-outline" size={20} color="#ED4956" />
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
 
-            {post.imageBase64 && (
+            {(post.imageUrl || post.imageBase64) && (
               <View style={[styles.postImagePlaceholder, { borderColor: theme.border, backgroundColor: theme.cardBg }]}>
-                 <Image source={{ uri: `data:image/jpeg;base64,${post.imageBase64}` }} style={{ width: '100%', height: '100%' }} />
+                 <Image 
+                   source={{ uri: post.imageUrl || `data:image/jpeg;base64,${post.imageBase64}` }} 
+                   style={{ width: '100%', height: '100%' }} 
+                 />
               </View>
             )}
 
@@ -338,7 +364,6 @@ export default function HomeScreen() {
     </ScrollView>
   );
 
-  // 4. SEARCH (Remains Intact)
   const renderSearch = () => (
     <View style={[styles.searchContainer, { backgroundColor: theme.bg }]}>
       <View style={[styles.searchBarWrapper, { backgroundColor: theme.cardBg, borderColor: theme.border }]}>
@@ -380,7 +405,6 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
       
-      {/* 1. TOP HEADER */}
       <View style={[styles.topHeader, { backgroundColor: theme.bg, borderBottomColor: theme.border }]}>
         <View style={styles.headerLeft}>
           <Text style={[styles.logoText, { color: theme.text }]}>KuKa Hub</Text>
@@ -392,7 +416,6 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      {/* 2. DYNAMIC MAIN CONTENT */}
       <View style={{ flex: 1 }}>
         {activeTab === 'Chats' && renderChats()}
         {activeTab === 'Feed' && renderFeed()}
@@ -400,36 +423,28 @@ export default function HomeScreen() {
         {activeTab === 'Search' && renderSearch()}
       </View>
 
-      {/* 3. SNAPCHAT-STYLE BOTTOM NAV (Home button removed!) */}
       <View style={[styles.bottomNav, { backgroundColor: theme.bg, borderTopColor: theme.border }]}>
-        
-        {/* CHATS (Inbox) Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('Chats')}>
           <Ionicons name={activeTab === 'Chats' ? 'chatbubbles' : 'chatbubbles-outline'} size={26} color={theme.text} style={get3DStyle()} />
         </TouchableOpacity>
         
-        {/* FEED Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('Feed')}>
           <Ionicons name={activeTab === 'Feed' ? 'images' : 'images-outline'} size={26} color={theme.text} style={get3DStyle()} />
         </TouchableOpacity>
 
-        {/* POST CREATOR (+) Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('Post')}>
           <Ionicons name={activeTab === 'Post' ? 'add-circle' : 'add-circle-outline'} size={32} color={theme.text} style={get3DStyle()} />
         </TouchableOpacity>
 
-        {/* SEARCH Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('Search')}>
           <Ionicons name={activeTab === 'Search' ? 'search' : 'search-outline'} size={26} color={theme.text} style={get3DStyle()} />
         </TouchableOpacity>
         
-        {/* PROFILE ROUTE */}
         <TouchableOpacity style={styles.navItem} onPress={() => { if(myUserId) router.push(`/user/${myUserId}`); }}>
           <View style={[styles.navProfileAvatar, { borderColor: 'transparent', backgroundColor: theme.cardBg }]}>
             <Text style={[styles.navProfileText, { color: theme.text }]}>{myName.charAt(0)}</Text>
           </View>
         </TouchableOpacity>
-
       </View>
 
     </SafeAreaView>
@@ -439,7 +454,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   
-  // Top Header
   topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, height: 50, borderBottomWidth: 1 },
   headerLeft: { flex: 1 },
   logoText: { fontSize: 22, fontWeight: 'bold', fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' }, 
@@ -452,7 +466,6 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', marginTop: 60, paddingHorizontal: 30 },
   emptyStateText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
 
-  // Inbox/Chats Styles
   contactRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
   avatar: { width: 56, height: 56, borderRadius: 28, borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', marginRight: 15 },
   avatarImage: { width: '100%', height: '100%' },
@@ -461,7 +474,6 @@ const styles = StyleSheet.create({
   contactName: { fontSize: 16, fontWeight: '600', marginBottom: 4 },
   contactId: { fontSize: 12, fontStyle: 'italic' },
 
-  // Post Creator Styles
   postInputBox: { borderWidth: 1, borderRadius: 12, padding: 15, minHeight: 120 },
   postTextInput: { fontSize: 16, minHeight: 60, textAlignVertical: 'top' },
   postInputActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
@@ -475,7 +487,6 @@ const styles = StyleSheet.create({
   submitPostBtn: { paddingVertical: 15, borderRadius: 12, alignItems: 'center', marginTop: 10 },
   submitPostBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
 
-  // Feed Styles
   storiesContainer: { borderBottomWidth: 1, paddingBottom: 10 },
   storiesScroll: { paddingHorizontal: 10, paddingVertical: 12 },
   storyItem: { alignItems: 'center', marginRight: 15, position: 'relative' },
@@ -500,7 +511,6 @@ const styles = StyleSheet.create({
   captionAuthor: { fontWeight: '700' },
   timeText: { fontSize: 11, marginTop: 6, marginBottom: 10 },
 
-  // Search View
   searchContainer: { flex: 1, paddingHorizontal: 15, paddingTop: 10 },
   searchBarWrapper: { flexDirection: 'row', alignItems: 'center', borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, height: 42 },
   searchIcon: { marginRight: 8 },
@@ -510,9 +520,8 @@ const styles = StyleSheet.create({
   searchPlaceholderTitle: { fontSize: 18, fontWeight: 'bold', marginTop: 15, marginBottom: 8 },
   searchPlaceholderSubtitle: { fontSize: 13, textAlign: 'center', lineHeight: 18 },
 
-  // Bottom Navigation Bar
   bottomNav: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', height: 48, borderTopWidth: 1, paddingBottom: Platform.OS === 'ios' ? 12 : 0 },
-  navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  navItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 5 },
   navProfileAvatar: { width: 26, height: 26, borderRadius: 13, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5 },
   navProfileText: { fontSize: 12, fontWeight: 'bold' },
 });

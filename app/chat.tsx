@@ -1,6 +1,6 @@
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
-import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from 'firebase/firestore';
@@ -8,7 +8,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Image,
-    ImageBackground,
     KeyboardAvoidingView,
     Linking,
     Platform,
@@ -22,7 +21,6 @@ import {
 } from 'react-native';
 import { db } from '../firebaseConfig';
 
-// Military-grade cryptography engine
 import { decryptMessage, encryptMessage } from './cryptoEngine';
 
 export default function ChatScreen() {
@@ -194,48 +192,6 @@ export default function ChatScreen() {
     } catch (error) {}
   };
 
-  const handleCloudinaryUpload = async (type: 'video' | 'audio' | 'file') => {
-    setShowAttachmentMenu(false);
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: type === 'video' ? 'video/*' : type === 'audio' ? 'audio/*' : '*/*',
-        copyToCacheDirectory: true,
-      });
-
-      if (result.canceled || !result.assets || result.assets.length === 0) return;
-      const asset = result.assets[0];
-      
-      setIsUploading(true);
-      setUploadStatus(`Encrypting ${type}...`);
-
-      const data = new FormData();
-      if (Platform.OS === 'web') {
-        data.append('file', asset.file as any);
-      } else {
-        data.append('file', { uri: asset.uri, name: asset.name, type: asset.mimeType || 'application/octet-stream' } as any);
-      }
-      data.append('upload_preset', 'kukachat');
-
-      const response = await fetch('https://api.cloudinary.com/v1_1/ie1p5v4v/auto/upload', { method: 'POST', body: data });
-      const cloudData = await response.json();
-
-      if (cloudData.secure_url) {
-        const chatRoomId = [myUserId, friendId].sort().join('_');
-        await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
-          senderId: myUserId,
-          mediaUrl: cloudData.secure_url, 
-          mediaType: type,
-          mediaName: asset.name,
-          replyTo: null,
-          pinned: false,
-          isBurner: isBurnerMode,
-          createdAt: serverTimestamp()
-        });
-      }
-    } catch (error) {} 
-    finally { setIsUploading(false); setUploadStatus(''); }
-  };
-
   const handleRevealBurner = (messageId: string) => {
     setRevealedMessages(prev => ({ ...prev, [messageId]: true }));
     setTimeout(async () => {
@@ -260,185 +216,184 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* IG Style Header */}
+      
+      {/* 1. GLOWING NEON HEADER */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={() => router.replace('/home')} style={styles.backButton}>
-            <Text style={styles.backIcon}>←</Text>
+            <Ionicons name="arrow-back" size={26} color="#FFF" style={styles.glowIcon} />
           </TouchableOpacity>
-          <View style={styles.headerAvatarContainer}>
+          <View style={[styles.headerAvatarContainer, styles.glowBox]}>
             <Text style={styles.headerAvatarText}>{friendName ? friendName.charAt(0).toUpperCase() : '?'}</Text>
           </View>
           <View>
-            <Text style={styles.headerTitle}>{friendName || 'Secure Chat'}</Text>
-            <Text style={styles.headerSubtitle}>KuKa Hub Vault</Text>
+            <Text style={[styles.headerTitle, styles.glowText]}>{friendName || 'Secure Chat'}</Text>
+            <Text style={[styles.headerSubtitle, styles.glowText]}>KuKa Hub Vault</Text>
           </View>
         </View>
         <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.headerIconBtn}><Text style={styles.headerIconText}>📞</Text></TouchableOpacity>
-          <TouchableOpacity style={styles.headerIconBtn}><Text style={styles.headerIconText}>📹</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.headerIconBtn}>
+            <Ionicons name="call" size={22} color="#FFF" style={styles.glowIcon} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.headerIconBtn}>
+            <Ionicons name="videocam" size={24} color="#FFF" style={styles.glowIcon} />
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowHeaderMenu(!showHeaderMenu)} style={styles.headerIconBtn}>
-            <Text style={styles.headerIconText}>⋮</Text>
+            <Ionicons name="ellipsis-vertical" size={24} color="#FFF" style={styles.glowIcon} />
           </TouchableOpacity>
         </View>
       </View>
 
       {showHeaderMenu && (
-        <View style={styles.headerDropdown}>
+        <View style={[styles.headerDropdown, styles.glowBox]}>
           <TouchableOpacity onPress={handleDeleteFullChat} style={styles.headerDropdownItem}>
-            <Text style={styles.headerDropdownText}>🗑️ Wipe Entire Chat</Text>
+            <Text style={[styles.headerDropdownText, {color: '#FFF'}]}>Wipe Entire Chat</Text>
           </TouchableOpacity>
         </View>
       )}
 
+      {/* 2. PURE BLACK CHAT AREA */}
       <KeyboardAvoidingView style={styles.chatArea} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {/* Placeholder for custom background image, currently a solid light grey matching the IG aesthetic */}
-        <ImageBackground style={styles.scrollBackground} source={{uri: 'https://i.imgur.com/placeholder_bg.jpg'}} resizeMode="cover">
-          <ScrollView 
-            ref={scrollViewRef}
-            contentContainerStyle={styles.scrollContent}
-            onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
-            onScrollBeginDrag={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
-          >
-            {messages.length === 0 ? (
-              <Text style={styles.emptyText}>This is the start of your secure conversation.</Text>
-            ) : (
-              messages.map((msg, index) => {
-                const isMe = msg.senderId === myUserId;
-                const isSelected = selectedMessageId === msg.id;
-                const isHiddenBurner = msg.isBurner && !isMe && !revealedMessages[msg.id];
-                
-                // Determine if we should show the friend's avatar next to their message
-                const showAvatar = !isMe && (index === messages.length - 1 || messages[index + 1]?.senderId === myUserId);
+        <ScrollView 
+          ref={scrollViewRef}
+          contentContainerStyle={styles.scrollContent}
+          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+          onScrollBeginDrag={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
+        >
+          {messages.length === 0 ? (
+            <Text style={[styles.emptyText, styles.glowText]}>This is the start of your secure conversation.</Text>
+          ) : (
+            messages.map((msg, index) => {
+              const isMe = msg.senderId === myUserId;
+              const isSelected = selectedMessageId === msg.id;
+              const isHiddenBurner = msg.isBurner && !isMe && !revealedMessages[msg.id];
+              
+              const showAvatar = !isMe && (index === messages.length - 1 || messages[index + 1]?.senderId === myUserId);
 
-                let displayMessage = '';
-                if (msg.textForMe && msg.textForFriend && myPrivateKey) {
-                  const encryptedCipher = isMe ? msg.textForMe : msg.textForFriend;
-                  displayMessage = decryptMessage(encryptedCipher, myPrivateKey) || '🔒 [Decryption Failed]';
-                } else if (msg.text) {
-                  displayMessage = msg.text;
-                }
+              let displayMessage = '';
+              if (msg.textForMe && msg.textForFriend && myPrivateKey) {
+                const encryptedCipher = isMe ? msg.textForMe : msg.textForFriend;
+                displayMessage = decryptMessage(encryptedCipher, myPrivateKey) || '🔒 [Decryption Failed]';
+              } else if (msg.text) {
+                displayMessage = msg.text;
+              }
 
-                return (
-                  <View key={msg.id} style={styles.messageBlock}>
-                    <View style={[styles.messageWrapper, isMe ? styles.messageWrapperMe : styles.messageWrapperThem]}>
-                      
-                      {/* Friend's Avatar (Only shows on their messages) */}
-                      {!isMe && (
-                        <View style={styles.chatAvatarContainer}>
-                          {showAvatar && <Text style={styles.chatAvatarText}>{friendName ? friendName.charAt(0) : '?'}</Text>}
-                        </View>
-                      )}
-
-                      <TouchableOpacity 
-                        activeOpacity={0.8}
-                        onPress={() => { setSelectedMessageId(isSelected ? null : msg.id); setShowHeaderMenu(false); setShowAttachmentMenu(false); }}
-                        style={[
-                          styles.messageBubble, 
-                          isMe ? styles.messageBubbleMe : styles.messageBubbleThem,
-                          msg.isBurner && styles.burnerBubble
-                        ]}
-                      >
-                        {isHiddenBurner ? (
-                          <TouchableOpacity onPress={() => handleRevealBurner(msg.id)} style={styles.revealButton}>
-                            <Text style={styles.revealButtonText}>💣 Tap to Reveal</Text>
-                          </TouchableOpacity>
-                        ) : (
-                          <>
-                            {msg.replyTo && (
-                              <View style={styles.embeddedReply}>
-                                <Text style={[styles.embeddedReplyText, isMe ? {color: '#CCC'} : {color: '#666'}]} numberOfLines={1}>{msg.replyTo.text}</Text>
-                              </View>
-                            )}
-                            {msg.imageBase64 && <Image source={{ uri: `data:image/jpeg;base64,${msg.imageBase64}` }} style={styles.chatImage} />}
-                            {msg.mediaUrl && (
-                              <TouchableOpacity style={[styles.mediaContainer, isMe ? {backgroundColor: 'rgba(255,255,255,0.1)'} : {backgroundColor: 'rgba(0,0,0,0.05)'}]} onPress={() => Linking.openURL(msg.mediaUrl)}>
-                                <Text style={styles.mediaIcon}>{msg.mediaType === 'video' ? '🎥' : msg.mediaType === 'audio' ? '🎵' : '📄'}</Text>
-                                <Text style={[styles.mediaNameText, isMe ? {color: '#FFF'} : {color: '#000'}]} numberOfLines={1}>{msg.mediaName || 'Encrypted File'}</Text>
-                              </TouchableOpacity>
-                            )}
-                            {displayMessage ? (
-                              <Text style={[styles.messageText, isMe ? styles.messageTextMe : styles.messageTextThem]}>{displayMessage}</Text>
-                            ) : null}
-                          </>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-
-                    {isSelected && !isHiddenBurner && (
-                      <View style={[styles.optionsMenu, isMe ? styles.optionsMenuMe : styles.optionsMenuThem]}>
-                        <TouchableOpacity style={styles.optionButton} onPress={() => { setReplyingTo({ id: msg.id, text: displayMessage || 'Attachment' }); setSelectedMessageId(null); }}><Text style={styles.optionText}>Reply</Text></TouchableOpacity>
-                        <TouchableOpacity style={styles.optionButton} onPress={() => { updateDoc(doc(db, 'chats', [myUserId, friendId].sort().join('_'), 'messages', msg.id), { pinned: !msg.pinned }); setSelectedMessageId(null); }}><Text style={styles.optionText}>{msg.pinned ? 'Unpin' : 'Pin'}</Text></TouchableOpacity>
-                        {isMe && <TouchableOpacity style={styles.optionButton} onPress={() => deleteDoc(doc(db, 'chats', [myUserId, friendId].sort().join('_'), 'messages', msg.id))}><Text style={[styles.optionText, { color: '#EF4444' }]}>Unsend</Text></TouchableOpacity>}
+              return (
+                <View key={msg.id} style={styles.messageBlock}>
+                  <View style={[styles.messageWrapper, isMe ? styles.messageWrapperMe : styles.messageWrapperThem]}>
+                    
+                    {!isMe && (
+                      <View style={[styles.chatAvatarContainer, styles.glowBox]}>
+                        {showAvatar && <Text style={styles.chatAvatarText}>{friendName ? friendName.charAt(0) : '?'}</Text>}
                       </View>
                     )}
-                  </View>
-                );
-              })
-            )}
-          </ScrollView>
-        </ImageBackground>
 
-        {/* IG Style Bottom Input Area */}
+                    <TouchableOpacity 
+                      activeOpacity={0.8}
+                      onPress={() => { setSelectedMessageId(isSelected ? null : msg.id); setShowHeaderMenu(false); setShowAttachmentMenu(false); }}
+                      style={[
+                        styles.messageBubble, 
+                        styles.glowBox,
+                        msg.isBurner && { borderColor: '#FF3333', shadowColor: '#FF3333' }
+                      ]}
+                    >
+                      {isHiddenBurner ? (
+                        <TouchableOpacity onPress={() => handleRevealBurner(msg.id)} style={styles.revealButton}>
+                          <Text style={[styles.revealButtonText, styles.glowText]}>💣 Reveal</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <>
+                          {msg.replyTo && (
+                            <View style={styles.embeddedReply}>
+                              <Text style={[styles.embeddedReplyText, styles.glowText]} numberOfLines={1}>{msg.replyTo.text}</Text>
+                            </View>
+                          )}
+                          {msg.imageBase64 && <Image source={{ uri: `data:image/jpeg;base64,${msg.imageBase64}` }} style={styles.chatImage} />}
+                          {msg.mediaUrl && (
+                            <TouchableOpacity style={styles.mediaContainer} onPress={() => Linking.openURL(msg.mediaUrl)}>
+                              <Text style={styles.mediaIcon}>{msg.mediaType === 'video' ? '🎥' : msg.mediaType === 'audio' ? '🎵' : '📄'}</Text>
+                              <Text style={[styles.mediaNameText, styles.glowText]} numberOfLines={1}>{msg.mediaName || 'Encrypted File'}</Text>
+                            </TouchableOpacity>
+                          )}
+                          {displayMessage ? (
+                            <Text style={[styles.messageText, styles.glowText]}>{displayMessage}</Text>
+                          ) : null}
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  {isSelected && !isHiddenBurner && (
+                    <View style={[styles.optionsMenu, isMe ? styles.optionsMenuMe : styles.optionsMenuThem]}>
+                      <TouchableOpacity style={[styles.optionButton, styles.glowBox]} onPress={() => { setReplyingTo({ id: msg.id, text: displayMessage || 'Attachment' }); setSelectedMessageId(null); }}>
+                        <Text style={[styles.optionText, styles.glowText]}>Reply</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.optionButton, styles.glowBox]} onPress={() => { updateDoc(doc(db, 'chats', [myUserId, friendId].sort().join('_'), 'messages', msg.id), { pinned: !msg.pinned }); setSelectedMessageId(null); }}>
+                        <Text style={[styles.optionText, styles.glowText]}>{msg.pinned ? 'Unpin' : 'Pin'}</Text>
+                      </TouchableOpacity>
+                      {isMe && (
+                        <TouchableOpacity style={[styles.optionButton, styles.glowBox, { borderColor: '#FF3333', shadowColor: '#FF3333' }]} onPress={() => deleteDoc(doc(db, 'chats', [myUserId, friendId].sort().join('_'), 'messages', msg.id))}>
+                          <Text style={[styles.optionText, styles.glowText, { color: '#FF3333', textShadowColor: '#FF3333' }]}>Unsend</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  )}
+                </View>
+              );
+            })
+          )}
+        </ScrollView>
+
+        {/* 3. GLOWING BOTTOM INPUT AREA */}
         <View style={styles.bottomArea}>
           {isUploading && (
             <View style={styles.uploadBanner}>
-              <ActivityIndicator size="small" color="#000" />
-              <Text style={styles.uploadBannerText}>{uploadStatus}</Text>
+              <ActivityIndicator size="small" color="#FFF" />
+              <Text style={[styles.uploadBannerText, styles.glowText]}>{uploadStatus}</Text>
             </View>
           )}
 
           {replyingTo && (
-            <View style={styles.replyBanner}>
-              <Text style={styles.replyBannerText} numberOfLines={1}>Replying to: {replyingTo.text}</Text>
+            <View style={[styles.replyBanner, styles.glowBox]}>
+              <Text style={[styles.replyBannerText, styles.glowText]} numberOfLines={1}>Replying to: {replyingTo.text}</Text>
               <TouchableOpacity onPress={() => setReplyingTo(null)}><Text style={styles.cancelReplyIcon}>❌</Text></TouchableOpacity>
             </View>
           )}
 
-          {showAttachmentMenu && (
-            <View style={styles.attachmentMenu}>
-              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('video')}><Text style={styles.attachmentMenuIcon}>🎥</Text><Text style={styles.attachmentMenuText}>Video</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('file')}><Text style={styles.attachmentMenuIcon}>📄</Text><Text style={styles.attachmentMenuText}>Document</Text></TouchableOpacity>
-            </View>
-          )}
-
           <View style={styles.inputContainer}>
-            {/* The Black Camera Icon */}
-            <TouchableOpacity style={styles.cameraIconBtn} onPress={handleSendImage}>
-              <Text style={styles.cameraIconText}>📷</Text>
+            <TouchableOpacity style={[styles.cameraIconBtn, styles.glowBox]} onPress={handleSendImage}>
+              <Ionicons name="camera" size={24} color="#FFF" style={styles.glowIcon} />
             </TouchableOpacity>
 
-            {/* The White Pill Input Box */}
-            <View style={styles.inputPill}>
+            <View style={[styles.inputPill, styles.glowBox]}>
               <TextInput
                 ref={textInputRef} 
-                style={styles.textInput}
+                style={[styles.textInput, styles.glowText]}
                 placeholder="Message..."
-                placeholderTextColor="#8E8E8E"
+                placeholderTextColor="rgba(255,255,255,0.6)"
                 value={inputText}
                 onChangeText={setInputText}
                 multiline={true}
-                onFocus={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
               />
               
               {inputText.trim().length === 0 ? (
                 <View style={styles.inlineActionIcons}>
                   <TouchableOpacity onPress={isRecording ? stopRecordingAndSend : startRecording} style={styles.inlineBtn}>
-                    <Text style={[styles.inlineIcon, isRecording && {color: 'red'}]}>{isRecording ? '⏹️' : '🎙️'}</Text>
+                    <Ionicons name={isRecording ? "stop-circle" : "mic"} size={24} color="#FFF" style={styles.glowIcon} />
                   </TouchableOpacity>
                   <TouchableOpacity onPress={handleSendImage} style={styles.inlineBtn}>
-                    <Text style={styles.inlineIcon}>🖼️</Text>
+                    <Ionicons name="image" size={24} color="#FFF" style={styles.glowIcon} />
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => setIsBurnerMode(!isBurnerMode)} style={styles.inlineBtn}>
-                    <Text style={[styles.inlineIcon, isBurnerMode && {color: 'red'}]}>🔥</Text>
+                    <Ionicons name="flame" size={24} color={isBurnerMode ? "#FF3333" : "#FFF"} style={isBurnerMode ? {textShadowColor: '#FF3333', textShadowRadius: 10} : styles.glowIcon} />
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => setShowAttachmentMenu(!showAttachmentMenu)} style={styles.inlineBtn}>
-                    <Text style={styles.inlineIcon}>➕</Text>
+                    <Ionicons name="add-circle" size={24} color="#FFF" style={styles.glowIcon} />
                   </TouchableOpacity>
                 </View>
               ) : (
                 <TouchableOpacity onPress={handleSendMessage} style={styles.sendTextBtn}>
-                  <Text style={styles.sendTextBtnLabel}>Send</Text>
+                  <Text style={[styles.sendTextBtnLabel, styles.glowText]}>Send</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -450,92 +405,97 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
+  // CORE: PURE BLACK EVERYWHERE
+  container: { flex: 1, backgroundColor: '#000000' },
+  chatArea: { flex: 1, backgroundColor: '#000000', zIndex: 1 },
+  scrollContent: { paddingHorizontal: 15, paddingVertical: 20, paddingBottom: 40, backgroundColor: '#000000' },
+  bottomArea: { backgroundColor: '#000000', paddingVertical: 10, paddingHorizontal: 15 },
   
-  // Header Styles (Light Mode)
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 12, backgroundColor: '#FAFAFA', borderBottomWidth: 1, borderColor: '#EAEAEA', zIndex: 10 },
+  // CORE: NEON WHITE GLOW EFFECTS
+  glowText: { 
+    color: '#FFFFFF', 
+    textShadowColor: 'rgba(255, 255, 255, 0.9)', 
+    textShadowOffset: { width: 0, height: 0 }, 
+    textShadowRadius: 8 
+  },
+  glowIcon: { 
+    textShadowColor: 'rgba(255, 255, 255, 0.9)', 
+    textShadowOffset: { width: 0, height: 0 }, 
+    textShadowRadius: 8 
+  },
+  glowBox: {
+    backgroundColor: '#000000',
+    borderColor: '#FFFFFF',
+    borderWidth: 1,
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    elevation: 4
+  },
+
+  // UI ELEMENTS
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 12, backgroundColor: '#000', borderBottomWidth: 1, borderBottomColor: '#FFF', shadowColor: '#FFF', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5, zIndex: 10 },
   headerLeft: { flexDirection: 'row', alignItems: 'center' },
   backButton: { marginRight: 15 },
-  backIcon: { fontSize: 24, color: '#000', fontWeight: '400' },
-  headerAvatarContainer: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#DBDBDB', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  headerAvatarText: { fontSize: 16, fontWeight: 'bold', color: '#555' },
-  headerTitle: { fontSize: 16, fontWeight: '700', color: '#000' },
-  headerSubtitle: { fontSize: 12, color: '#8E8E8E' },
+  headerAvatarContainer: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  headerAvatarText: { fontSize: 16, fontWeight: 'bold', color: '#FFF' },
+  headerTitle: { fontSize: 16, fontWeight: '700' },
+  headerSubtitle: { fontSize: 12 },
   headerRight: { flexDirection: 'row', alignItems: 'center' },
-  headerIconBtn: { marginLeft: 18 },
-  headerIconText: { fontSize: 20, color: '#000' },
+  headerIconBtn: { marginLeft: 15, padding: 5 },
 
-  headerDropdown: { position: 'absolute', top: 60, right: 15, backgroundColor: '#FFF', borderRadius: 12, borderWidth: 1, borderColor: '#EAEAEA', zIndex: 50, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 5, elevation: 5 },
+  headerDropdown: { position: 'absolute', top: 60, right: 15, borderRadius: 12, zIndex: 50 },
   headerDropdownItem: { paddingVertical: 15, paddingHorizontal: 20 },
-  headerDropdownText: { color: '#ED4956', fontSize: 14, fontWeight: 'bold' },
+  headerDropdownText: { fontSize: 14, fontWeight: 'bold' },
   
-  // Chat Area
-  chatArea: { flex: 1, backgroundColor: '#EFEFEF', zIndex: 1 },
-  scrollBackground: { flex: 1, backgroundColor: '#EFEFEF' }, // Swap backgroundColor for an image URL here if you want a wallpaper!
-  scrollContent: { paddingHorizontal: 15, paddingVertical: 20, paddingBottom: 40 },
-  emptyText: { color: '#8E8E8E', textAlign: 'center', marginTop: 40, fontStyle: 'italic' },
+  emptyText: { textAlign: 'center', marginTop: 40, fontStyle: 'italic' },
   
-  messageBlock: { marginBottom: 8 },
+  messageBlock: { marginBottom: 16 },
   messageWrapper: { flexDirection: 'row', alignItems: 'flex-end' },
   messageWrapperMe: { justifyContent: 'flex-end' },
   messageWrapperThem: { justifyContent: 'flex-start' },
   
-  // Bubbles
-  chatAvatarContainer: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#DBDBDB', justifyContent: 'center', alignItems: 'center', marginRight: 8, marginBottom: 2 },
-  chatAvatarText: { fontSize: 12, fontWeight: 'bold', color: '#555' },
+  chatAvatarContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 10, marginBottom: 2 },
+  chatAvatarText: { fontSize: 12, fontWeight: 'bold', color: '#FFF' },
   
   messageBubble: { maxWidth: '75%', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 22 },
-  messageBubbleMe: { backgroundColor: '#262626' }, // IG Dark Grey
-  messageBubbleThem: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EAEAEA' }, // IG White
-  burnerBubble: { borderColor: '#ED4956', borderWidth: 1 },
-  
-  messageText: { fontSize: 15, lineHeight: 20 },
-  messageTextMe: { color: '#FFFFFF' },
-  messageTextThem: { color: '#000000' },
+  messageText: { fontSize: 15, lineHeight: 22 },
 
-  revealButton: { backgroundColor: '#F0F0F0', padding: 10, borderRadius: 8, alignItems: 'center' },
-  revealButtonText: { color: '#ED4956', fontWeight: 'bold' },
+  revealButton: { backgroundColor: '#000', padding: 10, borderRadius: 8, alignItems: 'center' },
+  revealButtonText: { fontWeight: 'bold' },
   
-  chatImage: { width: 220, height: 220, borderRadius: 14, marginBottom: 5 },
-  mediaContainer: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 12, marginBottom: 5, width: 200 },
+  chatImage: { width: 220, height: 220, borderRadius: 14, marginBottom: 5, borderColor: '#FFF', borderWidth: 1 },
+  mediaContainer: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 12, marginBottom: 5, width: 200, backgroundColor: '#000', borderColor: '#FFF', borderWidth: 1 },
   mediaIcon: { fontSize: 20, marginRight: 8 },
   mediaNameText: { fontSize: 13, flex: 1, textDecorationLine: 'underline' },
 
-  embeddedReply: { backgroundColor: 'rgba(0,0,0,0.05)', padding: 8, borderRadius: 8, marginBottom: 6, borderLeftWidth: 3, borderLeftColor: '#DBDBDB' },
+  embeddedReply: { backgroundColor: '#000', padding: 8, borderRadius: 8, marginBottom: 6, borderLeftWidth: 3, borderLeftColor: '#FFF' },
   embeddedReplyText: { fontSize: 13, fontStyle: 'italic' },
 
-  optionsMenu: { flexDirection: 'row', marginTop: 4, gap: 10 },
+  optionsMenu: { flexDirection: 'row', marginTop: 6, gap: 10 },
   optionsMenuMe: { justifyContent: 'flex-end', paddingRight: 10 },
-  optionsMenuThem: { justifyContent: 'flex-start', paddingLeft: 46 }, // Offset for avatar
-  optionButton: { backgroundColor: '#FFF', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: '#EAEAEA' },
-  optionText: { color: '#262626', fontSize: 12, fontWeight: '600' },
+  optionsMenuThem: { justifyContent: 'flex-start', paddingLeft: 46 }, 
+  optionButton: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12 },
+  optionText: { fontSize: 12, fontWeight: '600' },
   
-  // Bottom Input Area (IG Style)
-  bottomArea: { backgroundColor: '#FAFAFA', paddingVertical: 10, paddingHorizontal: 15, borderTopWidth: 1, borderColor: '#EAEAEA' },
   uploadBanner: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingBottom: 10 },
-  uploadBannerText: { color: '#262626', fontSize: 14, marginLeft: 10, fontWeight: '600' },
+  uploadBannerText: { fontSize: 14, marginLeft: 10, fontWeight: '600' },
 
-  attachmentMenu: { position: 'absolute', bottom: 70, right: 20, backgroundColor: '#FFF', borderRadius: 16, padding: 5, borderWidth: 1, borderColor: '#EAEAEA', shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 10 },
-  attachmentMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 15 },
-  attachmentMenuIcon: { fontSize: 20, marginRight: 12 },
-  attachmentMenuText: { color: '#262626', fontSize: 16, fontWeight: '600' },
-
-  replyBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#EFEFEF', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 10, marginBottom: 10 },
-  replyBannerText: { color: '#8E8E8E', fontSize: 13, fontStyle: 'italic', flex: 1, marginRight: 10 },
+  replyBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 10, marginBottom: 10 },
+  replyBannerText: { fontSize: 13, fontStyle: 'italic', flex: 1, marginRight: 10 },
   cancelReplyIcon: { fontSize: 14 },
   
   inputContainer: { flexDirection: 'row', alignItems: 'flex-end' },
   
-  cameraIconBtn: { backgroundColor: '#000', width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 10, marginBottom: 3 },
-  cameraIconText: { color: '#FFF', fontSize: 18 },
+  cameraIconBtn: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginRight: 10, marginBottom: 2 },
   
-  inputPill: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 24, borderWidth: 1, borderColor: '#EAEAEA', minHeight: 44, maxHeight: 100, paddingHorizontal: 5 },
-  textInput: { flex: 1, color: '#000', fontSize: 15, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 12, minHeight: 44 },
+  inputPill: { flex: 1, flexDirection: 'row', alignItems: 'center', borderRadius: 24, minHeight: 46, maxHeight: 100, paddingHorizontal: 5 },
+  textInput: { flex: 1, fontSize: 15, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 12, minHeight: 46 },
   
   inlineActionIcons: { flexDirection: 'row', alignItems: 'center', paddingRight: 5 },
   inlineBtn: { padding: 6 },
-  inlineIcon: { fontSize: 20, color: '#262626' },
 
-  sendTextBtn: { paddingHorizontal: 15, paddingVertical: 10 },
-  sendTextBtnLabel: { color: '#0095F6', fontWeight: 'bold', fontSize: 16 }, // IG Blue
+  sendTextBtn: { paddingHorizontal: 15, paddingVertical: 12 },
+  sendTextBtnLabel: { fontWeight: 'bold', fontSize: 16 },
 });
