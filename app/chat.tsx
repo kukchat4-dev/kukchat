@@ -1,4 +1,5 @@
- import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Audio } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -7,6 +8,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Image,
+    ImageBackground,
     KeyboardAvoidingView,
     Linking,
     Platform,
@@ -20,7 +22,7 @@ import {
 } from 'react-native';
 import { db } from '../firebaseConfig';
 
-// NEW: Importing our military-grade cryptography engine
+// Military-grade cryptography engine
 import { decryptMessage, encryptMessage } from './cryptoEngine';
 
 export default function ChatScreen() {
@@ -43,10 +45,12 @@ export default function ChatScreen() {
   const [isBurnerMode, setIsBurnerMode] = useState(false);
   const [revealedMessages, setRevealedMessages] = useState<Record<string, boolean>>({});
 
-  // NEW: State to hold the cryptographic keys
   const [myPrivateKey, setMyPrivateKey] = useState<string | null>(null);
   const [myPublicKey, setMyPublicKey] = useState<string | null>(null);
   const [friendPublicKey, setFriendPublicKey] = useState<string | null>(null);
+
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
 
   useEffect(() => {
     let unsubscribe: any;
@@ -59,23 +63,15 @@ export default function ChatScreen() {
       }
       setMyUserId(storedId);
 
-      // 1. Load your Private Key from local offline storage
       const storedPrivateKey = await AsyncStorage.getItem('privateKey');
       setMyPrivateKey(storedPrivateKey);
 
-      // 2. Fetch your Public Key from the database
       const myUserSnap = await getDoc(doc(db, 'users', storedId));
-      if (myUserSnap.exists()) {
-        setMyPublicKey(myUserSnap.data().publicKey);
-      }
+      if (myUserSnap.exists()) setMyPublicKey(myUserSnap.data().publicKey);
 
-      // 3. Fetch your Friend's Public Key from the database
       const friendSnap = await getDoc(doc(db, 'users', friendId as string));
-      if (friendSnap.exists()) {
-        setFriendPublicKey(friendSnap.data().publicKey);
-      }
+      if (friendSnap.exists()) setFriendPublicKey(friendSnap.data().publicKey);
 
-      // 4. Load the chat history
       const chatRoomId = [storedId, friendId].sort().join('_');
       const messagesRef = collection(db, 'chats', chatRoomId, 'messages');
       const q = query(messagesRef, orderBy('createdAt', 'asc'));
@@ -90,18 +86,62 @@ export default function ChatScreen() {
     };
 
     loadChatAndKeys();
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
+    return () => { if (unsubscribe) unsubscribe(); };
   }, [friendId]);
+
+  const startRecording = async () => {
+    try {
+      await Audio.requestPermissionsAsync();
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      setRecording(recording);
+      setIsRecording(true);
+    } catch (err) { alert('❌ Microphone access denied.'); }
+  };
+
+  const stopRecordingAndSend = async () => {
+    if (!recording) return;
+    setIsRecording(false);
+    setIsUploading(true);
+    setUploadStatus('Encrypting Voice Note...');
+
+    await recording.stopAndUnloadAsync();
+    const uri = recording.getURI();
+    setRecording(null);
+
+    if (!uri) { setIsUploading(false); return; }
+
+    try {
+      const data = new FormData();
+      const filename = uri.split('/').pop() || 'voicenote.m4a';
+      data.append('file', { uri, name: filename, type: 'audio/m4a' } as any);
+      data.append('upload_preset', 'kukachat');
+
+      const response = await fetch('https://api.cloudinary.com/v1_1/ie1p5v4v/auto/upload', { method: 'POST', body: data });
+      const cloudData = await response.json();
+
+      if (cloudData.secure_url) {
+        const chatRoomId = [myUserId, friendId].sort().join('_');
+        await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
+          senderId: myUserId,
+          textForFriend: null,
+          textForMe: null,
+          mediaUrl: cloudData.secure_url, 
+          mediaType: 'audio',
+          mediaName: '🎙️ Voice Note',
+          replyTo: null,
+          pinned: false,
+          isBurner: isBurnerMode,
+          createdAt: serverTimestamp()
+        });
+      }
+    } catch (error) { alert('❌ Failed to upload voice note.'); } 
+    finally { setIsUploading(false); setUploadStatus(''); }
+  };
 
   const handleSendMessage = async () => {
     if (!inputText.trim()) return;
-    if (!friendPublicKey || !myPublicKey) {
-      alert("❌ Cannot establish a secure tunnel. Keys are missing.");
-      return;
-    }
+    if (!friendPublicKey || !myPublicKey) return;
 
     const rawText = inputText;
     const replyData = replyingTo ? { id: replyingTo.id, text: replyingTo.text } : null;
@@ -112,33 +152,26 @@ export default function ChatScreen() {
     setShowAttachmentMenu(false);
 
     try {
-      // NEW: The Double-Lock Protocol
       const textForFriend = encryptMessage(rawText, friendPublicKey);
       const textForMe = encryptMessage(rawText, myPublicKey);
-
       const chatRoomId = [myUserId, friendId].sort().join('_');
-      const messagesRef = collection(db, 'chats', chatRoomId, 'messages');
       
-      await addDoc(messagesRef, {
+      await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
         senderId: myUserId,
-        textForFriend: textForFriend, // Locked with their key
-        textForMe: textForMe,         // Locked with your key
-        text: null,                   // Permanently removing plain text
+        textForFriend: textForFriend,
+        textForMe: textForMe,
+        text: null,
         imageBase64: null, 
         replyTo: replyData, 
         pinned: false,
         isBurner: burnerFlag,
         createdAt: serverTimestamp()
       });
-    } catch (error) {
-      console.error("Error sending message:", error);
-      alert("❌ Message failed to send.");
-    }
+    } catch (error) {}
   };
 
   const handleSendImage = async () => {
     setShowAttachmentMenu(false);
-    const burnerFlag = isBurnerMode;
     try {
       let result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -151,24 +184,18 @@ export default function ChatScreen() {
         const chatRoomId = [myUserId, friendId].sort().join('_');
         await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
           senderId: myUserId,
-          textForFriend: null,
-          textForMe: null, 
           imageBase64: result.assets[0].base64,
           replyTo: null,
           pinned: false,
-          isBurner: burnerFlag,
+          isBurner: isBurnerMode,
           createdAt: serverTimestamp()
         });
       }
-    } catch (error) {
-      alert("❌ Failed to send image.");
-    }
+    } catch (error) {}
   };
 
   const handleCloudinaryUpload = async (type: 'video' | 'audio' | 'file') => {
     setShowAttachmentMenu(false);
-    const burnerFlag = isBurnerMode;
-    
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: type === 'video' ? 'video/*' : type === 'audio' ? 'audio/*' : '*/*',
@@ -179,7 +206,7 @@ export default function ChatScreen() {
       const asset = result.assets[0];
       
       setIsUploading(true);
-      setUploadStatus(`Encrypting and uploading ${type}...`);
+      setUploadStatus(`Encrypting ${type}...`);
 
       const data = new FormData();
       if (Platform.OS === 'web') {
@@ -189,36 +216,24 @@ export default function ChatScreen() {
       }
       data.append('upload_preset', 'kukachat');
 
-      const response = await fetch('https://api.cloudinary.com/v1_1/ie1p5v4v/auto/upload', {
-        method: 'POST',
-        body: data,
-      });
-
+      const response = await fetch('https://api.cloudinary.com/v1_1/ie1p5v4v/auto/upload', { method: 'POST', body: data });
       const cloudData = await response.json();
 
       if (cloudData.secure_url) {
         const chatRoomId = [myUserId, friendId].sort().join('_');
         await addDoc(collection(db, 'chats', chatRoomId, 'messages'), {
           senderId: myUserId,
-          textForFriend: null,
-          textForMe: null,
           mediaUrl: cloudData.secure_url, 
           mediaType: type,
           mediaName: asset.name,
           replyTo: null,
           pinned: false,
-          isBurner: burnerFlag,
+          isBurner: isBurnerMode,
           createdAt: serverTimestamp()
         });
-      } else {
-        alert('❌ Cloudinary upload failed.');
       }
-    } catch (error) {
-      alert('❌ Error processing file.');
-    } finally {
-      setIsUploading(false);
-      setUploadStatus('');
-    }
+    } catch (error) {} 
+    finally { setIsUploading(false); setUploadStatus(''); }
   };
 
   const handleRevealBurner = (messageId: string) => {
@@ -227,33 +242,8 @@ export default function ChatScreen() {
       try {
         const chatRoomId = [myUserId, friendId].sort().join('_');
         await deleteDoc(doc(db, 'chats', chatRoomId, 'messages', messageId));
-      } catch (error) {
-        console.error("Failed to execute self-destruct", error);
-      }
+      } catch (error) {}
     }, 10000); 
-  };
-
-  const handleUnsend = async (messageId: string) => {
-    try {
-      const chatRoomId = [myUserId, friendId].sort().join('_');
-      await deleteDoc(doc(db, 'chats', chatRoomId, 'messages', messageId));
-      setSelectedMessageId(null);
-    } catch (error) { console.error(error); }
-  };
-
-  const handlePinToggle = async (messageId: string, currentPinStatus: boolean) => {
-    try {
-      const chatRoomId = [myUserId, friendId].sort().join('_');
-      await updateDoc(doc(db, 'chats', chatRoomId, 'messages', messageId), { pinned: !currentPinStatus });
-      setSelectedMessageId(null);
-    } catch (error) { console.error(error); }
-  };
-
-  const handleReplyClick = (msg: any, decryptedText: string) => {
-    const replyText = decryptedText ? decryptedText : msg.mediaName ? `📁 ${msg.mediaName}` : '📷 Photo';
-    setReplyingTo({ id: msg.id, text: replyText });
-    setSelectedMessageId(null);
-    setTimeout(() => { textInputRef.current?.focus(); }, 100);
   };
 
   const handleDeleteFullChat = async () => {
@@ -264,31 +254,33 @@ export default function ChatScreen() {
       const snapshot = await getDocs(messagesRef);
       const deletePromises = snapshot.docs.map(docSnap => deleteDoc(docSnap.ref));
       await Promise.all(deletePromises);
-      alert("💥 Chat permanently wiped from the servers.");
       router.replace('/home'); 
-    } catch (error) {
-      alert("❌ Failed to wipe chat.");
-    }
-  };
-
-  const formatTimestamp = (timestamp: any) => {
-    if (!timestamp) return 'Sending...';
-    const date = timestamp.toDate();
-    const fullDay = date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-    const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    return `${fullDay} at ${time}`; 
+    } catch (error) {}
   };
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* IG Style Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.replace('/home')} style={styles.backButton}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>{friendName || 'Secure Chat'}</Text>
-        <TouchableOpacity onPress={() => { setShowHeaderMenu(!showHeaderMenu); setShowAttachmentMenu(false); }} style={styles.headerMenuBtn}>
-          <Text style={styles.headerMenuBtnText}>⋮</Text>
-        </TouchableOpacity>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity onPress={() => router.replace('/home')} style={styles.backButton}>
+            <Text style={styles.backIcon}>←</Text>
+          </TouchableOpacity>
+          <View style={styles.headerAvatarContainer}>
+            <Text style={styles.headerAvatarText}>{friendName ? friendName.charAt(0).toUpperCase() : '?'}</Text>
+          </View>
+          <View>
+            <Text style={styles.headerTitle}>{friendName || 'Secure Chat'}</Text>
+            <Text style={styles.headerSubtitle}>KuKa Hub Vault</Text>
+          </View>
+        </View>
+        <View style={styles.headerRight}>
+          <TouchableOpacity style={styles.headerIconBtn}><Text style={styles.headerIconText}>📞</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.headerIconBtn}><Text style={styles.headerIconText}>📹</Text></TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowHeaderMenu(!showHeaderMenu)} style={styles.headerIconBtn}>
+            <Text style={styles.headerIconText}>⋮</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {showHeaderMenu && (
@@ -300,141 +292,99 @@ export default function ChatScreen() {
       )}
 
       <KeyboardAvoidingView style={styles.chatArea} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView 
-          ref={scrollViewRef}
-          contentContainerStyle={styles.scrollContent}
-          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
-          onScrollBeginDrag={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
-        >
-          {messages.length === 0 ? (
-            <Text style={styles.emptyText}>This is the start of your secure conversation with {friendName}.</Text>
-          ) : (
-            messages.map((msg) => {
-              const isMe = msg.senderId === myUserId;
-              const isSelected = selectedMessageId === msg.id;
-              const isHiddenBurner = msg.isBurner && !isMe && !revealedMessages[msg.id];
+        {/* Placeholder for custom background image, currently a solid light grey matching the IG aesthetic */}
+        <ImageBackground style={styles.scrollBackground} source={{uri: 'https://i.imgur.com/placeholder_bg.jpg'}} resizeMode="cover">
+          <ScrollView 
+            ref={scrollViewRef}
+            contentContainerStyle={styles.scrollContent}
+            onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+            onScrollBeginDrag={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
+          >
+            {messages.length === 0 ? (
+              <Text style={styles.emptyText}>This is the start of your secure conversation.</Text>
+            ) : (
+              messages.map((msg, index) => {
+                const isMe = msg.senderId === myUserId;
+                const isSelected = selectedMessageId === msg.id;
+                const isHiddenBurner = msg.isBurner && !isMe && !revealedMessages[msg.id];
+                
+                // Determine if we should show the friend's avatar next to their message
+                const showAvatar = !isMe && (index === messages.length - 1 || messages[index + 1]?.senderId === myUserId);
 
-              // NEW: The Decryption Engine Rendering
-              let displayMessage = '';
-              if (msg.textForMe && msg.textForFriend && myPrivateKey) {
-                // If you sent it, decrypt the 'ForMe' version. If they sent it, decrypt the 'ForFriend' version.
-                const encryptedCipher = isMe ? msg.textForMe : msg.textForFriend;
-                displayMessage = decryptMessage(encryptedCipher, myPrivateKey) || '🔒 [Decryption Failed]';
-              } else if (msg.text) {
-                // Fallback just in case you have old plain-text messages in your history
-                displayMessage = msg.text;
-              }
+                let displayMessage = '';
+                if (msg.textForMe && msg.textForFriend && myPrivateKey) {
+                  const encryptedCipher = isMe ? msg.textForMe : msg.textForFriend;
+                  displayMessage = decryptMessage(encryptedCipher, myPrivateKey) || '🔒 [Decryption Failed]';
+                } else if (msg.text) {
+                  displayMessage = msg.text;
+                }
 
-              return (
-                <View key={msg.id} style={styles.messageBlock}>
-                  <TouchableOpacity 
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      setSelectedMessageId(isSelected ? null : msg.id);
-                      setShowHeaderMenu(false); 
-                      setShowAttachmentMenu(false);
-                    }}
-                    style={[styles.messageWrapper, isMe ? styles.messageWrapperMe : styles.messageWrapperThem]}
-                  >
-                    <View style={[
-                      styles.messageBubble, 
-                      isMe ? styles.messageBubbleMe : styles.messageBubbleThem,
-                      msg.isBurner && styles.burnerBubble
-                    ]}>
+                return (
+                  <View key={msg.id} style={styles.messageBlock}>
+                    <View style={[styles.messageWrapper, isMe ? styles.messageWrapperMe : styles.messageWrapperThem]}>
                       
-                      {isHiddenBurner ? (
-                        <TouchableOpacity onPress={() => handleRevealBurner(msg.id)} style={styles.revealButton}>
-                          <Text style={styles.revealButtonText}>💣 Tap to Reveal (10s)</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <>
-                          {msg.replyTo && (
-                            <View style={styles.embeddedReply}>
-                              <Text style={styles.embeddedReplyText} numberOfLines={1}>{msg.replyTo.text}</Text>
-                            </View>
-                          )}
-
-                          {msg.imageBase64 && (
-                            <Image source={{ uri: `data:image/jpeg;base64,${msg.imageBase64}` }} style={styles.chatImage} />
-                          )}
-
-                          {msg.mediaUrl && (
-                            <TouchableOpacity style={styles.mediaContainer} onPress={() => Linking.openURL(msg.mediaUrl)}>
-                              <Text style={styles.mediaIcon}>{msg.mediaType === 'video' ? '🎥' : msg.mediaType === 'audio' ? '🎵' : '📄'}</Text>
-                              <Text style={styles.mediaNameText} numberOfLines={1}>{msg.mediaName || 'Encrypted File'}</Text>
-                            </TouchableOpacity>
-                          )}
-
-                          {displayMessage ? (
-                            <View style={styles.messageTextRow}>
-                              <Text style={styles.messageText}>{displayMessage}</Text>
-                              {msg.pinned && <Text style={styles.pinIcon}>📌</Text>}
-                              {msg.isBurner && <Text style={styles.pinIcon}>🔥</Text>}
-                            </View>
-                          ) : (
-                            <View style={{flexDirection: 'row'}}>
-                              {msg.pinned && <Text style={styles.pinIcon}>📌</Text>}
-                              {msg.isBurner && <Text style={styles.pinIcon}>🔥</Text>}
-                            </View>
-                          )}
-                          
-                          <Text style={[styles.timestampText, isMe ? styles.timestampTextMe : styles.timestampTextThem]}>
-                            {formatTimestamp(msg.createdAt)}
-                          </Text>
-                        </>
+                      {/* Friend's Avatar (Only shows on their messages) */}
+                      {!isMe && (
+                        <View style={styles.chatAvatarContainer}>
+                          {showAvatar && <Text style={styles.chatAvatarText}>{friendName ? friendName.charAt(0) : '?'}</Text>}
+                        </View>
                       )}
 
-                    </View>
-                  </TouchableOpacity>
-
-                  {isSelected && !isHiddenBurner && (
-                    <View style={[styles.optionsMenu, isMe ? styles.optionsMenuMe : styles.optionsMenuThem]}>
-                      <TouchableOpacity style={styles.optionButton} onPress={() => handleReplyClick(msg, displayMessage)}>
-                        <Text style={styles.optionText}>Reply</Text>
+                      <TouchableOpacity 
+                        activeOpacity={0.8}
+                        onPress={() => { setSelectedMessageId(isSelected ? null : msg.id); setShowHeaderMenu(false); setShowAttachmentMenu(false); }}
+                        style={[
+                          styles.messageBubble, 
+                          isMe ? styles.messageBubbleMe : styles.messageBubbleThem,
+                          msg.isBurner && styles.burnerBubble
+                        ]}
+                      >
+                        {isHiddenBurner ? (
+                          <TouchableOpacity onPress={() => handleRevealBurner(msg.id)} style={styles.revealButton}>
+                            <Text style={styles.revealButtonText}>💣 Tap to Reveal</Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <>
+                            {msg.replyTo && (
+                              <View style={styles.embeddedReply}>
+                                <Text style={[styles.embeddedReplyText, isMe ? {color: '#CCC'} : {color: '#666'}]} numberOfLines={1}>{msg.replyTo.text}</Text>
+                              </View>
+                            )}
+                            {msg.imageBase64 && <Image source={{ uri: `data:image/jpeg;base64,${msg.imageBase64}` }} style={styles.chatImage} />}
+                            {msg.mediaUrl && (
+                              <TouchableOpacity style={[styles.mediaContainer, isMe ? {backgroundColor: 'rgba(255,255,255,0.1)'} : {backgroundColor: 'rgba(0,0,0,0.05)'}]} onPress={() => Linking.openURL(msg.mediaUrl)}>
+                                <Text style={styles.mediaIcon}>{msg.mediaType === 'video' ? '🎥' : msg.mediaType === 'audio' ? '🎵' : '📄'}</Text>
+                                <Text style={[styles.mediaNameText, isMe ? {color: '#FFF'} : {color: '#000'}]} numberOfLines={1}>{msg.mediaName || 'Encrypted File'}</Text>
+                              </TouchableOpacity>
+                            )}
+                            {displayMessage ? (
+                              <Text style={[styles.messageText, isMe ? styles.messageTextMe : styles.messageTextThem]}>{displayMessage}</Text>
+                            ) : null}
+                          </>
+                        )}
                       </TouchableOpacity>
-                      <TouchableOpacity style={styles.optionButton} onPress={() => handlePinToggle(msg.id, msg.pinned)}>
-                        <Text style={styles.optionText}>{msg.pinned ? 'Unpin' : 'Pin'}</Text>
-                      </TouchableOpacity>
-                      {isMe && (
-                        <TouchableOpacity style={styles.optionButton} onPress={() => handleUnsend(msg.id)}>
-                          <Text style={[styles.optionText, { color: '#EF4444' }]}>Unsend</Text>
-                        </TouchableOpacity>
-                      )}
                     </View>
-                  )}
-                </View>
-              );
-            })
-          )}
-        </ScrollView>
 
+                    {isSelected && !isHiddenBurner && (
+                      <View style={[styles.optionsMenu, isMe ? styles.optionsMenuMe : styles.optionsMenuThem]}>
+                        <TouchableOpacity style={styles.optionButton} onPress={() => { setReplyingTo({ id: msg.id, text: displayMessage || 'Attachment' }); setSelectedMessageId(null); }}><Text style={styles.optionText}>Reply</Text></TouchableOpacity>
+                        <TouchableOpacity style={styles.optionButton} onPress={() => { updateDoc(doc(db, 'chats', [myUserId, friendId].sort().join('_'), 'messages', msg.id), { pinned: !msg.pinned }); setSelectedMessageId(null); }}><Text style={styles.optionText}>{msg.pinned ? 'Unpin' : 'Pin'}</Text></TouchableOpacity>
+                        {isMe && <TouchableOpacity style={styles.optionButton} onPress={() => deleteDoc(doc(db, 'chats', [myUserId, friendId].sort().join('_'), 'messages', msg.id))}><Text style={[styles.optionText, { color: '#EF4444' }]}>Unsend</Text></TouchableOpacity>}
+                      </View>
+                    )}
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+        </ImageBackground>
+
+        {/* IG Style Bottom Input Area */}
         <View style={styles.bottomArea}>
-          
           {isUploading && (
             <View style={styles.uploadBanner}>
-              <ActivityIndicator size="small" color="#6366F1" />
+              <ActivityIndicator size="small" color="#000" />
               <Text style={styles.uploadBannerText}>{uploadStatus}</Text>
-            </View>
-          )}
-
-          {showAttachmentMenu && (
-            <View style={styles.attachmentMenu}>
-              <TouchableOpacity style={styles.attachmentMenuItem} onPress={handleSendImage}>
-                <Text style={styles.attachmentMenuIcon}>🖼️</Text>
-                <Text style={styles.attachmentMenuText}>Photo</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('video')}>
-                <Text style={styles.attachmentMenuIcon}>🎥</Text>
-                <Text style={styles.attachmentMenuText}>Video</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('audio')}>
-                <Text style={styles.attachmentMenuIcon}>🎵</Text>
-                <Text style={styles.attachmentMenuText}>Audio</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('file')}>
-                <Text style={styles.attachmentMenuIcon}>📄</Text>
-                <Text style={styles.attachmentMenuText}>File</Text>
-              </TouchableOpacity>
             </View>
           )}
 
@@ -445,32 +395,53 @@ export default function ChatScreen() {
             </View>
           )}
 
+          {showAttachmentMenu && (
+            <View style={styles.attachmentMenu}>
+              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('video')}><Text style={styles.attachmentMenuIcon}>🎥</Text><Text style={styles.attachmentMenuText}>Video</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.attachmentMenuItem} onPress={() => handleCloudinaryUpload('file')}><Text style={styles.attachmentMenuIcon}>📄</Text><Text style={styles.attachmentMenuText}>Document</Text></TouchableOpacity>
+            </View>
+          )}
+
           <View style={styles.inputContainer}>
-            <TouchableOpacity onPress={() => { setShowAttachmentMenu(!showAttachmentMenu); setShowHeaderMenu(false); }} style={styles.attachButton}>
-              <Text style={styles.attachButtonIcon}>➕</Text>
+            {/* The Black Camera Icon */}
+            <TouchableOpacity style={styles.cameraIconBtn} onPress={handleSendImage}>
+              <Text style={styles.cameraIconText}>📷</Text>
             </TouchableOpacity>
 
-            <TextInput
-              ref={textInputRef} 
-              style={styles.input}
-              placeholder="Message..."
-              placeholderTextColor="#64748B"
-              value={inputText}
-              onChangeText={setInputText}
-              multiline={true}
-              onFocus={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
-            />
-            
-            <TouchableOpacity 
-              style={[styles.burnerToggleBtn, isBurnerMode && styles.burnerToggleActive]} 
-              onPress={() => setIsBurnerMode(!isBurnerMode)}
-            >
-              <Text style={styles.burnerToggleText}>🔥</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.sendButton} onPress={handleSendMessage}>
-              <Text style={styles.sendButtonText}>Send</Text>
-            </TouchableOpacity>
+            {/* The White Pill Input Box */}
+            <View style={styles.inputPill}>
+              <TextInput
+                ref={textInputRef} 
+                style={styles.textInput}
+                placeholder="Message..."
+                placeholderTextColor="#8E8E8E"
+                value={inputText}
+                onChangeText={setInputText}
+                multiline={true}
+                onFocus={() => { setShowHeaderMenu(false); setShowAttachmentMenu(false); }} 
+              />
+              
+              {inputText.trim().length === 0 ? (
+                <View style={styles.inlineActionIcons}>
+                  <TouchableOpacity onPress={isRecording ? stopRecordingAndSend : startRecording} style={styles.inlineBtn}>
+                    <Text style={[styles.inlineIcon, isRecording && {color: 'red'}]}>{isRecording ? '⏹️' : '🎙️'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleSendImage} style={styles.inlineBtn}>
+                    <Text style={styles.inlineIcon}>🖼️</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setIsBurnerMode(!isBurnerMode)} style={styles.inlineBtn}>
+                    <Text style={[styles.inlineIcon, isBurnerMode && {color: 'red'}]}>🔥</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setShowAttachmentMenu(!showAttachmentMenu)} style={styles.inlineBtn}>
+                    <Text style={styles.inlineIcon}>➕</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity onPress={handleSendMessage} style={styles.sendTextBtn}>
+                  <Text style={styles.sendTextBtnLabel}>Send</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -479,80 +450,92 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 15, backgroundColor: '#1E293B', borderBottomWidth: 1, borderColor: '#334155', zIndex: 10 },
-  backButton: { paddingVertical: 5, paddingRight: 15 },
-  backButtonText: { color: '#6366F1', fontSize: 16, fontWeight: 'bold' },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFF' },
-  headerMenuBtn: { paddingVertical: 5, paddingLeft: 20 },
-  headerMenuBtnText: { color: '#FFF', fontSize: 22, fontWeight: 'bold' },
+  container: { flex: 1, backgroundColor: '#FAFAFA' },
   
-  headerDropdown: { position: 'absolute', top: 60, right: 15, backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155', zIndex: 50, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5, elevation: 5 },
+  // Header Styles (Light Mode)
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 12, backgroundColor: '#FAFAFA', borderBottomWidth: 1, borderColor: '#EAEAEA', zIndex: 10 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center' },
+  backButton: { marginRight: 15 },
+  backIcon: { fontSize: 24, color: '#000', fontWeight: '400' },
+  headerAvatarContainer: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#DBDBDB', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  headerAvatarText: { fontSize: 16, fontWeight: 'bold', color: '#555' },
+  headerTitle: { fontSize: 16, fontWeight: '700', color: '#000' },
+  headerSubtitle: { fontSize: 12, color: '#8E8E8E' },
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
+  headerIconBtn: { marginLeft: 18 },
+  headerIconText: { fontSize: 20, color: '#000' },
+
+  headerDropdown: { position: 'absolute', top: 60, right: 15, backgroundColor: '#FFF', borderRadius: 12, borderWidth: 1, borderColor: '#EAEAEA', zIndex: 50, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 5, elevation: 5 },
   headerDropdownItem: { paddingVertical: 15, paddingHorizontal: 20 },
-  headerDropdownText: { color: '#EF4444', fontSize: 14, fontWeight: 'bold' },
+  headerDropdownText: { color: '#ED4956', fontSize: 14, fontWeight: 'bold' },
   
-  chatArea: { flex: 1, backgroundColor: '#0F172A', zIndex: 1 },
-  scrollContent: { padding: 20, paddingBottom: 40 },
-  emptyText: { color: '#94A3B8', textAlign: 'center', marginTop: 40, fontStyle: 'italic' },
+  // Chat Area
+  chatArea: { flex: 1, backgroundColor: '#EFEFEF', zIndex: 1 },
+  scrollBackground: { flex: 1, backgroundColor: '#EFEFEF' }, // Swap backgroundColor for an image URL here if you want a wallpaper!
+  scrollContent: { paddingHorizontal: 15, paddingVertical: 20, paddingBottom: 40 },
+  emptyText: { color: '#8E8E8E', textAlign: 'center', marginTop: 40, fontStyle: 'italic' },
   
-  messageBlock: { marginBottom: 15 },
-  messageWrapper: { flexDirection: 'row' },
+  messageBlock: { marginBottom: 8 },
+  messageWrapper: { flexDirection: 'row', alignItems: 'flex-end' },
   messageWrapperMe: { justifyContent: 'flex-end' },
   messageWrapperThem: { justifyContent: 'flex-start' },
   
-  messageBubble: { maxWidth: '75%', padding: 12, borderRadius: 16 },
-  messageBubbleMe: { backgroundColor: '#6366F1', borderBottomRightRadius: 4 },
-  messageBubbleThem: { backgroundColor: '#1E293B', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#334155' },
+  // Bubbles
+  chatAvatarContainer: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#DBDBDB', justifyContent: 'center', alignItems: 'center', marginRight: 8, marginBottom: 2 },
+  chatAvatarText: { fontSize: 12, fontWeight: 'bold', color: '#555' },
   
-  burnerBubble: { borderColor: '#EF4444', borderWidth: 1 },
-  revealButton: { backgroundColor: '#334155', padding: 15, borderRadius: 8, alignItems: 'center' },
-  revealButtonText: { color: '#EF4444', fontWeight: 'bold' },
-
-  messageTextRow: { flexDirection: 'row', alignItems: 'flex-end', flexWrap: 'wrap' },
-  messageText: { color: '#FFF', fontSize: 15, lineHeight: 22 },
-  pinIcon: { fontSize: 12, marginLeft: 6, marginBottom: 2 },
-  chatImage: { width: 220, height: 220, borderRadius: 10, marginBottom: 5 },
+  messageBubble: { maxWidth: '75%', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 22 },
+  messageBubbleMe: { backgroundColor: '#262626' }, // IG Dark Grey
+  messageBubbleThem: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EAEAEA' }, // IG White
+  burnerBubble: { borderColor: '#ED4956', borderWidth: 1 },
   
-  mediaContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.25)', padding: 10, borderRadius: 10, marginBottom: 5, width: 200, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  mediaIcon: { fontSize: 24, marginRight: 10 },
-  mediaNameText: { color: '#FFF', fontSize: 13, flex: 1, textDecorationLine: 'underline' },
+  messageText: { fontSize: 15, lineHeight: 20 },
+  messageTextMe: { color: '#FFFFFF' },
+  messageTextThem: { color: '#000000' },
 
-  timestampText: { fontSize: 10, marginTop: 5, fontStyle: 'italic' },
-  timestampTextMe: { color: '#C7D2FE', textAlign: 'right' },
-  timestampTextThem: { color: '#94A3B8', textAlign: 'left' },
+  revealButton: { backgroundColor: '#F0F0F0', padding: 10, borderRadius: 8, alignItems: 'center' },
+  revealButtonText: { color: '#ED4956', fontWeight: 'bold' },
+  
+  chatImage: { width: 220, height: 220, borderRadius: 14, marginBottom: 5 },
+  mediaContainer: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 12, marginBottom: 5, width: 200 },
+  mediaIcon: { fontSize: 20, marginRight: 8 },
+  mediaNameText: { fontSize: 13, flex: 1, textDecorationLine: 'underline' },
 
-  embeddedReply: { backgroundColor: 'rgba(0,0,0,0.2)', padding: 8, borderRadius: 8, marginBottom: 6, borderLeftWidth: 3, borderLeftColor: '#F8FAFC' },
-  embeddedReplyText: { color: '#CBD5E1', fontSize: 13, fontStyle: 'italic' },
+  embeddedReply: { backgroundColor: 'rgba(0,0,0,0.05)', padding: 8, borderRadius: 8, marginBottom: 6, borderLeftWidth: 3, borderLeftColor: '#DBDBDB' },
+  embeddedReplyText: { fontSize: 13, fontStyle: 'italic' },
 
   optionsMenu: { flexDirection: 'row', marginTop: 4, gap: 10 },
   optionsMenuMe: { justifyContent: 'flex-end', paddingRight: 10 },
-  optionsMenuThem: { justifyContent: 'flex-start', paddingLeft: 10 },
-  optionButton: { backgroundColor: '#1E293B', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: '#334155' },
-  optionText: { color: '#94A3B8', fontSize: 12, fontWeight: 'bold' },
+  optionsMenuThem: { justifyContent: 'flex-start', paddingLeft: 46 }, // Offset for avatar
+  optionButton: { backgroundColor: '#FFF', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: '#EAEAEA' },
+  optionText: { color: '#262626', fontSize: 12, fontWeight: '600' },
   
-  bottomArea: { backgroundColor: '#1E293B', borderTopWidth: 1, borderColor: '#334155' },
-  
-  uploadBanner: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#334155', paddingVertical: 10 },
-  uploadBannerText: { color: '#FFF', fontSize: 14, marginLeft: 10, fontWeight: 'bold' },
+  // Bottom Input Area (IG Style)
+  bottomArea: { backgroundColor: '#FAFAFA', paddingVertical: 10, paddingHorizontal: 15, borderTopWidth: 1, borderColor: '#EAEAEA' },
+  uploadBanner: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingBottom: 10 },
+  uploadBannerText: { color: '#262626', fontSize: 14, marginLeft: 10, fontWeight: '600' },
 
-  attachmentMenu: { position: 'absolute', bottom: 85, left: 15, backgroundColor: '#1E293B', borderRadius: 16, padding: 10, borderWidth: 1, borderColor: '#334155', width: 200, zIndex: 100, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 10 },
-  attachmentMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 15, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
-  attachmentMenuIcon: { fontSize: 20, marginRight: 15 },
-  attachmentMenuText: { color: '#F8FAFC', fontSize: 16, fontWeight: 'bold' },
+  attachmentMenu: { position: 'absolute', bottom: 70, right: 20, backgroundColor: '#FFF', borderRadius: 16, padding: 5, borderWidth: 1, borderColor: '#EAEAEA', shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 10 },
+  attachmentMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 15 },
+  attachmentMenuIcon: { fontSize: 20, marginRight: 12 },
+  attachmentMenuText: { color: '#262626', fontSize: 16, fontWeight: '600' },
 
-  replyBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#334155', paddingHorizontal: 15, paddingVertical: 10 },
-  replyBannerText: { color: '#CBD5E1', fontSize: 13, fontStyle: 'italic', flex: 1, marginRight: 10 },
+  replyBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#EFEFEF', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 10, marginBottom: 10 },
+  replyBannerText: { color: '#8E8E8E', fontSize: 13, fontStyle: 'italic', flex: 1, marginRight: 10 },
   cancelReplyIcon: { fontSize: 14 },
   
-  inputContainer: { flexDirection: 'row', padding: 15, alignItems: 'center' },
-  attachButton: { paddingRight: 12, paddingBottom: 5, justifyContent: 'center', alignItems: 'center' },
-  attachButtonIcon: { fontSize: 24, color: '#94A3B8' },
-  input: { flex: 1, backgroundColor: '#0F172A', color: '#FFF', borderRadius: 20, paddingHorizontal: 15, paddingTop: 12, paddingBottom: 12, minHeight: 45, maxHeight: 100, borderWidth: 1, borderColor: '#334155', fontSize: 16 },
+  inputContainer: { flexDirection: 'row', alignItems: 'flex-end' },
   
-  burnerToggleBtn: { marginLeft: 10, backgroundColor: '#334155', width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#475569' },
-  burnerToggleActive: { backgroundColor: '#EF4444', borderColor: '#DC2626' },
-  burnerToggleText: { fontSize: 18 },
+  cameraIconBtn: { backgroundColor: '#000', width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 10, marginBottom: 3 },
+  cameraIconText: { color: '#FFF', fontSize: 18 },
+  
+  inputPill: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', borderRadius: 24, borderWidth: 1, borderColor: '#EAEAEA', minHeight: 44, maxHeight: 100, paddingHorizontal: 5 },
+  textInput: { flex: 1, color: '#000', fontSize: 15, paddingHorizontal: 12, paddingTop: 12, paddingBottom: 12, minHeight: 44 },
+  
+  inlineActionIcons: { flexDirection: 'row', alignItems: 'center', paddingRight: 5 },
+  inlineBtn: { padding: 6 },
+  inlineIcon: { fontSize: 20, color: '#262626' },
 
-  sendButton: { marginLeft: 10, backgroundColor: '#6366F1', borderRadius: 20, paddingHorizontal: 20, paddingVertical: 12, justifyContent: 'center', alignItems: 'center', height: 45 },
-  sendButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
+  sendTextBtn: { paddingHorizontal: 15, paddingVertical: 10 },
+  sendTextBtnLabel: { color: '#0095F6', fontWeight: 'bold', fontSize: 16 }, // IG Blue
 });
