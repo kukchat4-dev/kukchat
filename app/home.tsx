@@ -1,368 +1,233 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { addDoc, collection, doc, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import {
-    Image,
-    Modal,
+    Platform,
     SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
-    TextInput,
     TouchableOpacity,
     View
 } from 'react-native';
-import { db } from '../firebaseConfig';
 
 export default function HomeScreen() {
   const router = useRouter();
-  
-  // Modals
-  const [showAddFriendModal, setShowAddFriendModal] = useState(false);
-  const [friendId, setFriendId] = useState('');
-  const [showPostModal, setShowPostModal] = useState(false);
-  const [postText, setPostText] = useState('');
-  const [showInboxModal, setShowInboxModal] = useState(false);
-  
-  // Profile & Feed State
-  const [myUserId, setMyUserId] = useState('Loading...');
-  const [myName, setMyName] = useState('Loading...');
-  const [myProfilePic, setMyProfilePic] = useState<string | null>(null);
-  const [posts, setPosts] = useState<any[]>([]);
-
-  // NEW: State for the Local Join (Friends List)
-  const [allUsers, setAllUsers] = useState<Record<string, any>>({});
-  const [requestsToMe, setRequestsToMe] = useState<any[]>([]);
-  const [requestsFromMe, setRequestsFromMe] = useState<any[]>([]);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    let userUnsub: any;
-    let postsUnsub: any;
-    let allUsersUnsub: any;
-    let reqToMeUnsub: any;
-    let reqFromMeUnsub: any;
-
-    const loadSession = async () => {
+    const checkUser = async () => {
       const storedId = await AsyncStorage.getItem('currentUserId');
-      if (storedId) {
-        setMyUserId(storedId);
-        
-        // 1. Listen to My Profile
-        userUnsub = onSnapshot(doc(db, 'users', storedId), (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            if (data.name) setMyName(data.name);
-            if (data.photoBase64) setMyProfilePic(data.photoBase64);
-          }
-        });
-
-        // 2. Listen to Live Feed
-        postsUnsub = onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (snapshot) => {
-          setPosts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        });
-
-        // 3. NEW: Listen to All Users (To get real-time names & photos for friends)
-        allUsersUnsub = onSnapshot(collection(db, 'users'), (snapshot) => {
-          const usersMap: Record<string, any> = {};
-          snapshot.docs.forEach(doc => { usersMap[doc.id] = doc.data(); });
-          setAllUsers(usersMap);
-        });
-
-        // 4. NEW: Listen to requests sent TO me (Inbox + Accepted Friends)
-        reqToMeUnsub = onSnapshot(query(collection(db, 'friendRequests'), where('toId', '==', storedId)), (snapshot) => {
-          setRequestsToMe(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        });
-
-        // 5. NEW: Listen to requests sent FROM me (Accepted Friends)
-        reqFromMeUnsub = onSnapshot(query(collection(db, 'friendRequests'), where('fromId', '==', storedId)), (snapshot) => {
-          setRequestsFromMe(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        });
-
-      } else {
+      if (!storedId) {
         router.replace('/login');
+      } else {
+        setMyUserId(storedId);
       }
     };
-    
-    loadSession();
-
-    return () => {
-      if (userUnsub) userUnsub();
-      if (postsUnsub) postsUnsub();
-      if (allUsersUnsub) allUsersUnsub();
-      if (reqToMeUnsub) reqToMeUnsub();
-      if (reqFromMeUnsub) reqFromMeUnsub();
-    };
+    checkUser();
   }, []);
 
-  // --- THE LOCAL JOIN ENGINE ---
-  // Filters pending requests for the Notification Bell
-  const pendingRequests = requestsToMe.filter(req => req.status === 'pending');
+  // --- MOCK DATA FOR UI DESIGN ---
+  const stories = [
+    { id: '1', name: 'Your story', isMe: true, image: 'https://i.imgur.com/placeholder1.jpg' },
+    { id: '2', name: 'Viru', isMe: false, image: 'https://i.imgur.com/placeholder2.jpg' },
+    { id: '3', name: 'Loka', isMe: false, image: 'https://i.imgur.com/placeholder3.jpg' },
+    { id: '4', name: 'JAAAT', isMe: false, image: 'https://i.imgur.com/placeholder4.jpg' },
+    { id: '5', name: 'Nisha', isMe: false, image: 'https://i.imgur.com/placeholder5.jpg' },
+  ];
 
-  // Merges all accepted IDs (whether you sent it or they sent it)
-  const acceptedToMe = requestsToMe.filter(req => req.status === 'accepted').map(req => req.fromId);
-  const acceptedFromMe = requestsFromMe.filter(req => req.status === 'accepted').map(req => req.toId);
-  const friendIds = Array.from(new Set([...acceptedToMe, ...acceptedFromMe]));
+  const feedPosts = [
+    {
+      id: '101',
+      author: 'Viru',
+      authorImage: 'https://i.imgur.com/placeholder2.jpg',
+      location: 'Jodhpur, Rajasthan',
+      postImage: 'https://i.imgur.com/placeholder_feed1.jpg',
+      likes: '1,204',
+      caption: 'Exploring the blue city. The architecture here never gets old! 🏰✨',
+      time: '2 hours ago'
+    },
+    {
+      id: '102',
+      author: 'Loka',
+      authorImage: 'https://i.imgur.com/placeholder3.jpg',
+      location: 'India',
+      postImage: 'https://i.imgur.com/placeholder_feed2.jpg',
+      likes: '856',
+      caption: 'Late night coding sessions... KuKa Hub is going to be massive. 💻🔥',
+      time: '5 hours ago'
+    }
+  ];
 
-  // Builds the final real-time Chat List
-  const friendsList = friendIds.map(id => {
-    const user = allUsers[id] || {};
-    return {
-      friendId: id,
-      name: user.name || 'Unknown User',
-      photoBase64: user.photoBase64 || null,
-      preview: 'Tap to open secure chat'
-    };
-  });
-  // -----------------------------
-
-  const handleOpenChat = (friendId: string, friendName: string) => {
-    router.push({ pathname: '/chat', params: { friendId, friendName } });
-  };
-
-  const handleLogout = async () => {
-    await AsyncStorage.removeItem('currentUserId');
-    router.replace('/login');
-  };
-
-  const handleSendFriendRequest = async () => {
-    if (friendId.length !== 10) { alert('ID must be exactly 10 digits'); return; }
-    if (friendId === myUserId) { alert('You cannot send a friend request to yourself!'); return; }
-    try {
-      await addDoc(collection(db, 'friendRequests'), { fromId: myUserId, fromName: myName, toId: friendId, status: 'pending', createdAt: serverTimestamp() });
-      alert(`✅ Secure friend request sent to ${friendId}!`);
-      setShowAddFriendModal(false);
-      setFriendId('');
-    } catch (error) { console.error(error); alert('❌ Error sending request.'); }
-  };
-
-  const handleAcceptRequest = async (requestId: string) => {
-    try { await updateDoc(doc(db, 'friendRequests', requestId), { status: 'accepted' }); } catch (error) { console.error(error); }
-  };
-
-  const handleDeclineRequest = async (requestId: string) => {
-    try { await updateDoc(doc(db, 'friendRequests', requestId), { status: 'declined' }); } catch (error) { console.error(error); }
-  };
-
-  const handleCreatePost = async () => {
-    if (!postText.trim()) return;
-    try {
-      await addDoc(collection(db, 'posts'), { authorId: myUserId, authorName: myName, authorPic: myProfilePic || '', content: postText, createdAt: serverTimestamp() });
-      setShowPostModal(false);
-      setPostText('');
-    } catch (error) { console.error(error); alert('❌ Error creating post.'); }
+  const navigateToChat = () => {
+    // For now, this acts as a quick shortcut to test your chat vault!
+    // We will build a real inbox screen next.
+    router.push({ pathname: '/chat', params: { friendId: '8209525890', friendName: 'JAAAT' } });
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>KuKa Hub</Text>
-        <View style={styles.headerIcons}>
-          <TouchableOpacity onPress={() => setShowInboxModal(true)} style={styles.iconButton}>
-            <Text style={styles.iconText}>🔔 {pendingRequests.length > 0 && <Text style={styles.badge}>({pendingRequests.length})</Text>}</Text>
+      {/* 1. TOP NAVIGATION BAR */}
+      <View style={styles.topHeader}>
+        <View style={styles.headerLeft}>
+          <Text style={styles.logoText}>KuKa Hub</Text>
+        </View>
+        <View style={styles.headerRight}>
+          <TouchableOpacity style={styles.headerIconBtn}>
+            <Text style={styles.headerIcon}>➕</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowAddFriendModal(true)} style={styles.iconButton}>
-            <Text style={styles.iconText}>➕</Text>
+          <TouchableOpacity style={styles.headerIconBtn}>
+            <Text style={styles.headerIcon}>❤️</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleLogout} style={styles.iconButton}>
-            <Text style={styles.iconText}>⋮</Text> 
+          <TouchableOpacity style={styles.headerIconBtn} onPress={navigateToChat}>
+            <Text style={styles.headerIcon}>💬</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      <ScrollView>
-        <View style={styles.profileSection}>
-          <View style={styles.profileAvatar}>
-            {myProfilePic ? (
-              <Image source={{ uri: `data:image/jpeg;base64,${myProfilePic}` }} style={styles.avatarImage} />
-            ) : (
-              <Text style={styles.avatarLetter}>{myName.charAt(0).toUpperCase()}</Text>
-            )}
-          </View>
-          <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>{myName}</Text>
-            <Text style={styles.profileId}>ID: {myUserId}</Text>
-          </View>
-          <TouchableOpacity style={styles.editButton} onPress={() => router.push('/profile')}>
-            <Text style={styles.editButtonText}>Edit Profile</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={styles.sectionTitle}>Chats</Text>
-        <View style={styles.chatListContainer}>
-          {/* NEW: Dynamically mapping your real accepted friends! */}
-          {friendsList.length === 0 ? (
-            <Text style={styles.emptyFeedText}>No secure connections yet.</Text>
-          ) : (
-            friendsList.map((friend) => (
-              <TouchableOpacity 
-                key={friend.friendId} 
-                style={styles.chatListItem}
-                onPress={() => handleOpenChat(friend.friendId, friend.name)}
-              >
-                <View style={styles.chatListAvatar}>
-                  {friend.photoBase64 ? (
-                    <Image source={{ uri: `data:image/jpeg;base64,${friend.photoBase64}` }} style={styles.avatarImage} />
-                  ) : (
-                    <Text style={styles.chatListAvatarText}>{friend.name.charAt(0).toUpperCase()}</Text>
-                  )}
+      <ScrollView style={styles.mainScroll} showsVerticalScrollIndicator={false}>
+        
+        {/* 2. STORIES SECTION */}
+        <View style={styles.storiesContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storiesScroll}>
+            {stories.map((story) => (
+              <TouchableOpacity key={story.id} style={styles.storyItem}>
+                <View style={[styles.storyRing, story.isMe ? styles.storyRingMe : styles.storyRingFriend]}>
+                  <View style={styles.storyAvatarContainer}>
+                    <Text style={styles.dummyAvatarText}>{story.name.charAt(0)}</Text>
+                    {/* <Image source={{ uri: story.image }} style={styles.storyAvatar} /> */}
+                  </View>
                 </View>
-                <View style={styles.chatListInfo}>
-                  <Text style={styles.chatListName}>{friend.name}</Text>
-                  <Text style={styles.chatListPreview} numberOfLines={1}>{friend.preview}</Text>
-                </View>
+                {story.isMe && (
+                  <View style={styles.addStoryBadge}>
+                    <Text style={styles.addStoryText}>+</Text>
+                  </View>
+                )}
+                <Text style={styles.storyName} numberOfLines={1}>
+                  {story.name}
+                </Text>
               </TouchableOpacity>
-            ))
-          )}
+            ))}
+          </ScrollView>
         </View>
 
-        <View style={styles.feedHeader}>
-          <Text style={styles.sectionTitle}>Live Feed</Text>
-          <TouchableOpacity style={styles.createPostButton} onPress={() => setShowPostModal(true)}>
-            <Text style={styles.createPostText}>📝 New Post</Text>
-          </TouchableOpacity>
-        </View>
-
-        {posts.length === 0 ? (
-          <Text style={styles.emptyFeedText}>No posts yet. Be the first to share something!</Text>
-        ) : (
-          posts.map((post) => (
-            <View key={post.id} style={styles.postCard}>
-              <View style={styles.postHeader}>
+        {/* 3. MAIN FEED SECTION */}
+        {feedPosts.map((post) => (
+          <View key={post.id} style={styles.postContainer}>
+            {/* Post Header */}
+            <View style={styles.postHeader}>
+              <View style={styles.postHeaderLeft}>
                 <View style={styles.postAvatar}>
-                  {post.authorPic ? (
-                    <Image source={{ uri: `data:image/jpeg;base64,${post.authorPic}` }} style={styles.avatarImage} />
-                  ) : (
-                    <Text style={{color: '#FFF', fontWeight: 'bold'}}>{post.authorName.charAt(0).toUpperCase()}</Text>
-                  )}
+                  <Text style={styles.dummyAvatarText}>{post.author.charAt(0)}</Text>
                 </View>
-                <Text style={styles.postAuthor}>{post.authorName}</Text>
-                <TouchableOpacity><Text style={styles.postOptions}>⋮</Text></TouchableOpacity>
+                <View>
+                  <Text style={styles.postAuthor}>{post.author}</Text>
+                  {post.location && <Text style={styles.postLocation}>{post.location}</Text>}
+                </View>
               </View>
-              <View style={styles.postContentBox}>
-                <Text style={styles.postText}>{post.content}</Text>
-              </View>
+              <TouchableOpacity>
+                <Text style={styles.postOptionsIcon}>⋮</Text>
+              </TouchableOpacity>
             </View>
-          ))
-        )}
+
+            {/* Post Image (Placeholder grey box for now) */}
+            <View style={styles.postImagePlaceholder}>
+               <Text style={styles.postImageText}>Content from {post.author}</Text>
+            </View>
+
+            {/* Post Actions */}
+            <View style={styles.postActions}>
+              <View style={styles.postActionsLeft}>
+                <TouchableOpacity style={styles.actionBtn}><Text style={styles.actionIcon}>❤️</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.actionBtn}><Text style={styles.actionIcon}>💬</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.actionBtn}><Text style={styles.actionIcon}>✈️</Text></TouchableOpacity>
+              </View>
+              <TouchableOpacity><Text style={styles.actionIcon}>📌</Text></TouchableOpacity>
+            </View>
+
+            {/* Post Details */}
+            <View style={styles.postDetails}>
+              <Text style={styles.likesText}>{post.likes} likes</Text>
+              <Text style={styles.captionText}>
+                <Text style={styles.captionAuthor}>{post.author} </Text>
+                {post.caption}
+              </Text>
+              <Text style={styles.timeText}>{post.time}</Text>
+            </View>
+          </View>
+        ))}
       </ScrollView>
 
-      {/* Modals */}
-      <Modal visible={showInboxModal} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Friend Requests</Text>
-            {pendingRequests.length === 0 ? (
-              <Text style={styles.emptyFeedText}>No pending requests right now.</Text>
-            ) : (
-              pendingRequests.map((req) => (
-                <View key={req.id} style={styles.requestItem}>
-                  <View>
-                    {/* Pulling their real-time name directly from the user database mapping */}
-                    <Text style={styles.requestName}>{allUsers[req.fromId]?.name || req.fromName}</Text>
-                    <Text style={styles.requestId}>ID: {req.fromId}</Text>
-                  </View>
-                  <View style={styles.requestActions}>
-                    <TouchableOpacity style={styles.acceptBtn} onPress={() => handleAcceptRequest(req.id)}><Text style={styles.actionText}>✅</Text></TouchableOpacity>
-                    <TouchableOpacity style={styles.declineBtn} onPress={() => handleDeclineRequest(req.id)}><Text style={styles.actionText}>❌</Text></TouchableOpacity>
-                  </View>
-                </View>
-              ))
-            )}
-            <TouchableOpacity style={[styles.cancelButton, {marginTop: 20, alignSelf: 'flex-end'}]} onPress={() => setShowInboxModal(false)}><Text style={styles.cancelText}>Close Inbox</Text></TouchableOpacity>
+      {/* 4. BOTTOM NAVIGATION BAR */}
+      <View style={styles.bottomNav}>
+        <TouchableOpacity style={styles.navItem}><Text style={styles.navIcon}>🏠</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.navItem}><Text style={styles.navIcon}>🔍</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.navItem}><Text style={styles.navIcon}>🎬</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.navItem}><Text style={styles.navIcon}>🛍️</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.navItem}>
+          <View style={styles.navProfileAvatar}>
+            <Text style={styles.navProfileText}>S</Text>
           </View>
-        </View>
-      </Modal>
+        </TouchableOpacity>
+      </View>
 
-      <Modal visible={showAddFriendModal} transparent={true} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Add a Friend</Text>
-            <Text style={styles.modalSubtitle}>Enter their 10-digit Secure ID</Text>
-            <TextInput style={styles.modalInput} placeholder="10-Digit ID" placeholderTextColor="#64748B" keyboardType="numeric" maxLength={10} value={friendId} onChangeText={setFriendId} />
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={() => setShowAddFriendModal(false)}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.primaryModalButton} onPress={handleSendFriendRequest}><Text style={styles.primaryModalText}>Send Request</Text></TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={showPostModal} transparent={true} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Create New Post</Text>
-            <TextInput style={[styles.modalInput, styles.postInput]} placeholder="What's on your mind?" placeholderTextColor="#64748B" multiline={true} value={postText} onChangeText={setPostText} />
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={() => setShowPostModal(false)}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.primaryModalButton} onPress={handleCreatePost}><Text style={styles.primaryModalText}>Publish Post</Text></TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 15, borderBottomWidth: 1, borderColor: '#1E293B' },
-  headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#FFF' },
-  headerIcons: { flexDirection: 'row', gap: 15 },
-  iconButton: { padding: 5 },
-  iconText: { fontSize: 20, color: '#FFF' },
-  badge: { color: '#EF4444', fontSize: 14, fontWeight: 'bold' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   
-  profileSection: { flexDirection: 'row', alignItems: 'center', padding: 20, backgroundColor: '#1E293B', margin: 15, borderRadius: 16 },
-  profileAvatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  avatarImage: { width: '100%', height: '100%' },
-  avatarLetter: { fontSize: 24, color: '#FFF', fontWeight: 'bold' },
-  profileInfo: { flex: 1, marginLeft: 15 },
-  profileName: { fontSize: 18, color: '#FFF', fontWeight: 'bold' },
-  profileId: { fontSize: 13, color: '#94A3B8', marginTop: 2 },
-  editButton: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
-  editButtonText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+  // Top Header
+  topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, height: 55, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#EFEFEF' },
+  headerLeft: { flex: 1 },
+  logoText: { fontSize: 24, fontWeight: 'bold', fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif', color: '#000' }, // Gives it that cursive/stylized feel
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
+  headerIconBtn: { marginLeft: 20 },
+  headerIcon: { fontSize: 24, color: '#000' },
+
+  mainScroll: { flex: 1 },
+
+  // Stories Section
+  storiesContainer: { borderBottomWidth: 1, borderBottomColor: '#EFEFEF', backgroundColor: '#FFFFFF', paddingBottom: 10 },
+  storiesScroll: { paddingHorizontal: 10, paddingVertical: 12 },
+  storyItem: { alignItems: 'center', marginRight: 15, position: 'relative' },
+  storyRing: { width: 74, height: 74, borderRadius: 37, justifyContent: 'center', alignItems: 'center', borderWidth: 2 },
+  storyRingFriend: { borderColor: '#D92E7F' }, // IG Pink/Red color
+  storyRingMe: { borderColor: '#EFEFEF' },
+  storyAvatarContainer: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#FAFAFA', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFF' },
+  dummyAvatarText: { fontSize: 24, color: '#999', fontWeight: 'bold' },
+  addStoryBadge: { position: 'absolute', bottom: 20, right: 0, backgroundColor: '#0095F6', width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFF' },
+  addStoryText: { color: '#FFF', fontSize: 14, fontWeight: 'bold', marginTop: -2 },
+  storyName: { fontSize: 11, color: '#262626', marginTop: 5, maxWidth: 74 },
+
+  // Feed Section
+  postContainer: { marginBottom: 15, backgroundColor: '#FFFFFF' },
+  postHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10 },
+  postHeaderLeft: { flexDirection: 'row', alignItems: 'center' },
+  postAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#EFEFEF', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
+  postAuthor: { fontSize: 13, fontWeight: '700', color: '#262626' },
+  postLocation: { fontSize: 11, color: '#8E8E8E' },
+  postOptionsIcon: { fontSize: 18, color: '#262626', paddingHorizontal: 5 },
   
-  sectionTitle: { fontSize: 16, color: '#FFF', fontWeight: 'bold', marginLeft: 20, marginTop: 10, marginBottom: 10 },
-  
-  chatListContainer: { marginBottom: 20 },
-  chatListItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 20, borderBottomWidth: 1, borderColor: '#1E293B' },
-  chatListAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: '#334155', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  chatListAvatarText: { fontSize: 22, color: '#FFF', fontWeight: 'bold' },
-  chatListInfo: { flex: 1, marginLeft: 15, justifyContent: 'center' },
-  chatListName: { color: '#F8FAFC', fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
-  chatListPreview: { color: '#94A3B8', fontSize: 14 },
-  
-  feedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingRight: 20, marginBottom: 10 },
-  createPostButton: { backgroundColor: '#6366F1', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  createPostText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
-  emptyFeedText: { color: '#94A3B8', textAlign: 'center', marginTop: 20, fontStyle: 'italic', paddingHorizontal: 20 },
-  
-  postCard: { backgroundColor: '#1E293B', marginHorizontal: 15, marginBottom: 15, borderRadius: 16, padding: 15, borderWidth: 1, borderColor: '#334155' },
-  postHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  postAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  postAuthor: { flex: 1, color: '#FFF', fontWeight: 'bold', marginLeft: 10 },
-  postOptions: { color: '#94A3B8', fontSize: 18, paddingHorizontal: 5 },
-  postContentBox: { backgroundColor: '#0F172A', padding: 15, borderRadius: 10 },
-  postText: { color: '#E2E8F0', fontSize: 14, lineHeight: 20 },
-  
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
-  modalCard: { width: '85%', backgroundColor: '#1E293B', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#334155' },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#FFF', marginBottom: 15 },
-  modalSubtitle: { fontSize: 14, color: '#94A3B8', marginBottom: 20 },
-  modalInput: { backgroundColor: '#0F172A', color: '#FFF', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#334155', fontSize: 16, marginBottom: 20 },
-  postInput: { minHeight: 100, textAlignVertical: 'top' },
-  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
-  cancelButton: { paddingVertical: 10, paddingHorizontal: 15 },
-  cancelText: { color: '#94A3B8', fontWeight: 'bold' },
-  primaryModalButton: { backgroundColor: '#6366F1', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 8 },
-  primaryModalText: { color: '#FFF', fontWeight: 'bold' },
-  
-  requestItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0F172A', padding: 15, borderRadius: 10, marginBottom: 10 },
-  requestName: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  requestId: { color: '#94A3B8', fontSize: 12, marginTop: 4 },
-  requestActions: { flexDirection: 'row', gap: 15 },
-  acceptBtn: { backgroundColor: '#22C55E', padding: 8, borderRadius: 8 },
-  declineBtn: { backgroundColor: '#EF4444', padding: 8, borderRadius: 8 },
-  actionText: { fontSize: 16 }
+  postImagePlaceholder: { width: '100%', height: 400, backgroundColor: '#FAFAFA', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#EFEFEF' },
+  postImageText: { color: '#999', fontSize: 16, fontWeight: 'bold' },
+
+  postActions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 10 },
+  postActionsLeft: { flexDirection: 'row' },
+  actionBtn: { marginRight: 15 },
+  actionIcon: { fontSize: 24, color: '#262626' },
+
+  postDetails: { paddingHorizontal: 12 },
+  likesText: { fontWeight: '700', fontSize: 13, color: '#262626', marginBottom: 4 },
+  captionText: { fontSize: 13, color: '#262626', lineHeight: 18 },
+  captionAuthor: { fontWeight: '700' },
+  timeText: { fontSize: 11, color: '#8E8E8E', marginTop: 6, marginBottom: 10 },
+
+  // Bottom Navigation Bar
+  bottomNav: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', height: 50, backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#EFEFEF', paddingBottom: Platform.OS === 'ios' ? 15 : 0 },
+  navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  navIcon: { fontSize: 24, color: '#262626' },
+  navProfileAvatar: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#EFEFEF', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#262626' },
+  navProfileText: { fontSize: 12, fontWeight: 'bold', color: '#555' }
 });
