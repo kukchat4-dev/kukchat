@@ -2,145 +2,186 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import React, { useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View
+} from 'react-native';
 import { db } from '../firebaseConfig';
 
 export default function LoginScreen() {
+  const router = useRouter();
   const [userId, setUserId] = useState('');
   const [pin, setPin] = useState('');
-  
-  // NEW: State for the custom username
-  const [username, setUsername] = useState('');
-  
-  const [statusMessage, setStatusMessage] = useState(''); 
-  const [isLoginMode, setIsLoginMode] = useState(true);
-  const router = useRouter(); 
+  const [loading, setLoading] = useState(false);
 
-  const handleAuth = async () => {
-    setStatusMessage('Checking...'); 
-
+  const handleLogin = async () => {
     if (userId.length !== 10) {
-      setStatusMessage('❌ Error: User ID must be exactly 10 digits.');
+      alert('Secure ID must be exactly 10 digits.');
       return;
     }
-    if (pin.length !== 4) {
-      setStatusMessage('❌ Error: PIN must be exactly 4 digits.');
+    if (pin.length < 4) {
+      alert('PIN must be at least 4 digits.');
       return;
     }
+
+    setLoading(true);
+    Keyboard.dismiss(); // Instantly hides the keyboard when processing starts
 
     try {
       const userRef = doc(db, 'users', userId);
       const userSnap = await getDoc(userRef);
 
-      if (isLoginMode) {
-        // --- LOGIN FLOW ---
-        if (userSnap.exists()) {
-          if (userSnap.data().pin === pin) {
-            await AsyncStorage.setItem('currentUserId', userId);
-            setStatusMessage('✅ Success! Unlocking Vault...');
-            setTimeout(() => { router.push('/home'); }, 500); 
-          } else {
-            setStatusMessage('❌ Error: Incorrect PIN.');
-          }
-        } else {
-          setStatusMessage('❌ Error: Account not found. Please create one.');
-        }
-
-      } else {
-        // --- CREATE ACCOUNT FLOW ---
-        if (!username.trim()) {
-          setStatusMessage('❌ Error: Please enter a username.');
-          return;
-        }
-
-        if (userSnap.exists()) {
-          setStatusMessage('❌ Error: This 10-digit ID is already taken.');
-        } else {
-          setStatusMessage('⚙️ Creating new secure account...');
-          
-          // NEW: Saves the actual username they typed in!
-          await setDoc(userRef, {
-            pin: pin,
-            name: username, 
-            createdAt: new Date().toISOString(),
-          });
-          
+      if (userSnap.exists()) {
+        const userData = userSnap.data();
+        if (userData.pin === pin) {
           await AsyncStorage.setItem('currentUserId', userId);
-
-          setStatusMessage('✅ Account Created! Unlocking Vault...');
-          setTimeout(() => { router.push('/home'); }, 500); 
+          router.replace('/home');
+        } else {
+          alert('❌ Incorrect PIN.');
         }
+      } else {
+        // Automatically registers a new vault agent if the ID doesn't exist yet
+        await setDoc(userRef, {
+          id: userId,
+          pin: pin,
+          name: `Agent ${userId.substring(0, 4)}`, // Sets a default name
+          photoBase64: null
+        });
+        await AsyncStorage.setItem('currentUserId', userId);
+        router.replace('/home');
       }
     } catch (error) {
       console.error(error);
-      setStatusMessage('⚠️ Database Error: Check terminal or F12 console.');
+      alert('❌ Connection error. Check your database rules.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollCenter}>
-        <View style={styles.card}>
-          <Text style={styles.title}>{isLoginMode ? 'Welcome Back' : 'Create Vault'}</Text>
-          <Text style={styles.subtitle}>{isLoginMode ? 'Enter your 10-digit ID and 4-digit PIN' : 'Choose a unique 10-digit ID, PIN, and Username'}</Text>
+      {/* Allows tapping the background to close the keyboard */}
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        
+        {/* Automatically pushes the login box up so the keyboard doesn't hide it */}
+        <KeyboardAvoidingView 
+          style={styles.innerContainer} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.card}>
+            <Text style={styles.title}>KuKa Hub</Text>
+            <Text style={styles.subtitle}>Secure Vault Access</Text>
 
-          {/* NEW: Only show Username box if they are creating an account */}
-          {!isLoginMode && (
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Display Name</Text>
-              <TextInput 
-                style={styles.input} 
-                placeholder="How should friends see you?" 
-                placeholderTextColor="#64748B" 
-                value={username} 
-                onChangeText={setUsername} 
-              />
-            </View>
-          )}
+            <TextInput
+              style={styles.input}
+              placeholder="10-Digit Secure ID"
+              placeholderTextColor="#64748B"
+              value={userId}
+              onChangeText={setUserId}
+              keyboardType="numeric"
+              maxLength={10}
+              returnKeyType="next"
+            />
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>10-Digit User ID</Text>
-            <TextInput style={styles.input} placeholder="Enter 10-digit number" placeholderTextColor="#64748B" keyboardType="numeric" maxLength={10} value={userId} onChangeText={setUserId} />
+            <TextInput
+              style={styles.input}
+              placeholder="Enter PIN"
+              placeholderTextColor="#64748B"
+              secureTextEntry={true}
+              value={pin}
+              onChangeText={setPin}
+              keyboardType="numeric"
+              maxLength={6}
+              returnKeyType="done"
+              onSubmitEditing={handleLogin} // THE MAGIC FIX: Fires login when hitting Done
+            />
+
+            <TouchableOpacity 
+              style={styles.loginButton} 
+              onPress={handleLogin}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={styles.loginButtonText}>Enter Vault</Text>
+              )}
+            </TouchableOpacity>
           </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>4-Digit PIN</Text>
-            <TextInput style={styles.input} placeholder="••••" placeholderTextColor="#64748B" keyboardType="numeric" secureTextEntry={true} maxLength={4} value={pin} onChangeText={setPin} />
-          </View>
-
-          {statusMessage ? <Text style={styles.statusText}>{statusMessage}</Text> : null}
-
-          <TouchableOpacity style={styles.button} onPress={handleAuth}>
-            <Text style={styles.buttonText}>{isLoginMode ? 'Login to Vault' : 'Create Account'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.toggleButton} onPress={() => { 
-            setIsLoginMode(!isLoginMode); 
-            setStatusMessage(''); 
-            setUserId(''); 
-            setPin(''); 
-            setUsername(''); 
-          }}>
-            <Text style={styles.toggleText}>{isLoginMode ? "Don't have an account? Create one." : "Already have an account? Login here."}</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
+        </KeyboardAvoidingView>
+      </TouchableWithoutFeedback>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
-  scrollCenter: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  card: { width: '100%', maxWidth: 400, backgroundColor: '#1E293B', padding: 24, borderRadius: 16, borderWidth: 1, borderColor: '#334155' },
-  title: { fontSize: 24, fontWeight: 'bold', color: '#F8FAFC', marginBottom: 6, textAlign: 'center' },
-  subtitle: { fontSize: 14, color: '#94A3B8', marginBottom: 24, textAlign: 'center' },
-  inputGroup: { marginBottom: 16 },
-  label: { color: '#CBD5E1', fontSize: 14, marginBottom: 8, fontWeight: '600' },
-  input: { backgroundColor: '#0F172A', color: '#FFF', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, fontSize: 16, borderWidth: 1, borderColor: '#334155' },
-  statusText: { color: '#FBBF24', fontSize: 14, textAlign: 'center', marginBottom: 12, fontWeight: 'bold' },
-  button: { backgroundColor: '#6366F1', paddingVertical: 14, borderRadius: 10, alignItems: 'center', marginTop: 4 },
-  buttonText: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
-  toggleButton: { marginTop: 20, alignItems: 'center' },
-  toggleText: { color: '#94A3B8', fontSize: 14, textDecorationLine: 'underline' },
+  container: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+  },
+  innerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  card: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#1E293B',
+    padding: 30,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FFF',
+    textAlign: 'center',
+    marginBottom: 5,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#94A3B8',
+    textAlign: 'center',
+    marginBottom: 30,
+  },
+  input: {
+    backgroundColor: '#0F172A',
+    color: '#FFF',
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    paddingVertical: 15,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginBottom: 15,
+  },
+  loginButton: {
+    backgroundColor: '#6366F1',
+    borderRadius: 10,
+    paddingVertical: 15,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  loginButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  }
 });
