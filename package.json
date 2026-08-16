@@ -7,7 +7,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "build": "npm install --legacy-peer-deps && expo export"
+    "build": "npm install --legacy-peer-deps && npx expo export -p web"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.0.0",
