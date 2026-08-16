@@ -1,8 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ONE_ON_ONE_VIDEO_CALL_CONFIG, ONE_ON_ONE_VOICE_CALL_CONFIG, ZegoUIKitPrebuiltCall } from '@zegocloud/zego-uikit-prebuilt-call-rn';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, SafeAreaView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Platform, SafeAreaView, StyleSheet, View } from 'react-native';
 
 export default function CallScreen() {
   const router = useRouter();
@@ -26,6 +25,16 @@ export default function CallScreen() {
       </View>
     );
   }
+
+  // 🛑 NUCLEAR OPTION: If this is running on the web, stop executing this file entirely.
+  // Vercel will use call.web.tsx instead.
+  if (Platform.OS === 'web') {
+    return <View style={styles.container} />;
+  }
+
+  // 📱 NATIVE MOBILE ENGINE: We use a dynamic require() INSIDE the component.
+  // The Vercel static scanner cannot read inside this block, so it will not crash!
+  const { ZegoUIKitPrebuiltCall, ONE_ON_ONE_VIDEO_CALL_CONFIG, ONE_ON_ONE_VOICE_CALL_CONFIG } = require('@zegocloud/zego-uikit-prebuilt-call-rn');
 
   const callRoomId = [myUserId, friendId].sort().join('_');
 
