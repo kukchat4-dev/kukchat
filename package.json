@@ -2,6 +2,12 @@
   "name": "kuka-hub",
   "version": "1.0.0",
   "main": "expo-router/entry",
+  "browser": {
+    "@zegocloud/zego-uikit-prebuilt-call-rn": false,
+    "@zegocloud/zego-uikit-rn": false,
+    "zego-express-engine-reactnative": false,
+    "zego-zim-react-native": false
+  },
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
