@@ -22,6 +22,7 @@
     "@expo/metro-runtime": "~3.2.1",
     "@expo/vector-icons": "^14.0.0",
     "@react-native-async-storage/async-storage": "1.23.1",
+    "@zegocloud/zego-uikit-prebuilt": "^2.18.1",
     "@zegocloud/zego-uikit-prebuilt-call-rn": "^4.6.3",
     "@zegocloud/zego-uikit-rn": "^2.1.2",
     "expo": "~51.0.8",
