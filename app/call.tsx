@@ -1,11 +1,17 @@
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, SafeAreaView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+// 🛑 THE MAGIC BRIDGE 🛑
+// Vercel automatically loads ZegoEngine.web.tsx (dummy).
+// Your Phone automatically loads ZegoEngine.native.tsx (real).
+import { ONE_ON_ONE_VIDEO_CALL_CONFIG, ONE_ON_ONE_VOICE_CALL_CONFIG, ZegoUIKitPrebuiltCall } from '../components/ZegoEngine';
 
 export default function CallScreen() {
   const router = useRouter();
-  const { friendId, callType } = useLocalSearchParams();
+  const { friendId, friendName, callType } = useLocalSearchParams();
   const [myUserId, setMyUserId] = useState<string | null>(null);
 
   const ZegoAppID = 237453259; 
@@ -26,16 +32,27 @@ export default function CallScreen() {
     );
   }
 
-  // 🛑 NUCLEAR OPTION: If this is running on the web, stop executing this file entirely.
-  // Vercel will use call.web.tsx instead.
+  // --- 🌐 VERCEL WEB UI ---
   if (Platform.OS === 'web') {
-    return <View style={styles.container} />;
+    return (
+      <SafeAreaView style={styles.webContainer}>
+        <View style={styles.webContent}>
+          <View style={styles.avatarCircle}>
+            <Ionicons name={callType === 'video' ? "videocam" : "call"} size={48} color="#FFF" />
+          </View>
+          <Text style={styles.webTitle}>Encrypted {callType === 'video' ? 'Video' : 'Audio'} Call</Text>
+          <Text style={styles.webSubtitle}>Connecting to {friendName || friendId}...</Text>
+          <Text style={styles.webNote}>Lock-screen wake and Bluetooth routing are only active on the native Android/iOS Vault app.</Text>
+          <TouchableOpacity style={styles.endBtn} onPress={() => router.back()}>
+            <Ionicons name="call" size={24} color="#FFF" style={{ transform: [{ rotate: '135deg' }], marginRight: 8 }} />
+            <Text style={styles.endBtnText}>End Call</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
   }
 
-  // 📱 NATIVE MOBILE ENGINE: We use a dynamic require() INSIDE the component.
-  // The Vercel static scanner cannot read inside this block, so it will not crash!
-  const { ZegoUIKitPrebuiltCall, ONE_ON_ONE_VIDEO_CALL_CONFIG, ONE_ON_ONE_VOICE_CALL_CONFIG } = require('@zegocloud/zego-uikit-prebuilt-call-rn');
-
+  // --- 📱 NATIVE MOBILE UI ---
   const callRoomId = [myUserId, friendId].sort().join('_');
 
   return (
@@ -62,5 +79,14 @@ export default function CallScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000' },
-  loadingContainer: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' }
+  loadingContainer: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' },
+  
+  webContainer: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' },
+  webContent: { alignItems: 'center', paddingHorizontal: 30, maxWidth: 450 },
+  avatarCircle: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#111', borderWidth: 1, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center', marginBottom: 20, shadowColor: '#FFF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 10 },
+  webTitle: { color: '#FFF', fontSize: 22, fontWeight: 'bold', marginBottom: 8, textShadowColor: 'rgba(255,255,255,0.8)', textShadowRadius: 8 },
+  webSubtitle: { color: '#A0A0A0', fontSize: 16, marginBottom: 20 },
+  webNote: { color: '#666', fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 35 },
+  endBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ED4956', paddingVertical: 14, paddingHorizontal: 32, borderRadius: 30, shadowColor: '#ED4956', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 8 },
+  endBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 }
 });
