@@ -1,8 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ONE_ON_ONE_VIDEO_CALL_CONFIG, ONE_ON_ONE_VOICE_CALL_CONFIG, ZegoUIKitPrebuiltCall } from '@zegocloud/zego-uikit-prebuilt-call-rn';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
 export default function CallScreen() {
   const router = useRouter();
@@ -12,7 +11,6 @@ export default function CallScreen() {
   const [myName, setMyName] = useState<string>('Vault User');
   const [isReady, setIsReady] = useState(false);
 
-  // YOUR SECURE ZEGOCLOUD CREDENTIALS
   const ZegoAppID = 237453259; 
   const ZegoAppSign = '8ba15d8772a464ecfab7a773419d442760a98b36ddbf86986f2ff0a431c51825'; 
 
@@ -24,9 +22,7 @@ export default function CallScreen() {
         return;
       }
       setMyUserId(storedId);
-      
-      // Setting your identity for the call room
-      setMyName('Vault ID: ' + storedId); 
+      setMyName('Vault ID: ' + storedId);
       setIsReady(true);
     };
 
@@ -42,7 +38,30 @@ export default function CallScreen() {
     );
   }
 
-  // Create a unique, repeatable Room ID based on your two IDs
+  // Web Browser Fallback (Native Calling runs on Android/iOS APK builds)
+  if (Platform.OS === 'web') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.webFallbackContainer}>
+          <Text style={styles.webTitle}>🔐 Encrypted Call Vault</Text>
+          <Text style={styles.webSubtitle}>
+            Native background audio & video calling with lock-screen wake is active for Android/iOS builds.
+          </Text>
+          <Text style={styles.callDetails}>
+            Connecting to: {friendName || friendId} ({callType === 'video' ? 'Video Call' : 'Voice Call'})
+          </Text>
+          <View style={styles.btnRow}>
+            <Text style={styles.hangupBtn} onPress={() => router.back()}>
+              End Session
+            </Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Native Mobile Engine
+  const { ZegoUIKitPrebuiltCall, ONE_ON_ONE_VIDEO_CALL_CONFIG, ONE_ON_ONE_VOICE_CALL_CONFIG } = require('@zegocloud/zego-uikit-prebuilt-call-rn');
   const callRoomId = [myUserId, friendId].sort().join('_');
 
   return (
@@ -53,15 +72,11 @@ export default function CallScreen() {
         userID={myUserId}
         userName={myName}
         callID={callRoomId}
-        
-        // Dynamically switch between Audio or Video config based on the button clicked
         config={{
           ...(callType === 'video' ? ONE_ON_ONE_VIDEO_CALL_CONFIG : ONE_ON_ONE_VOICE_CALL_CONFIG),
-          onCallEnd: (callID, reason, duration) => {
-            // Automatically route back to the chat vault when the call ends
+          onCallEnd: () => {
             router.back();
           },
-          // Customizing the UI to match your Dark Vault aesthetic
           layout: {
             mode: 'pictureInPicture',
           },
@@ -76,23 +91,13 @@ export default function CallScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#000000' 
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: '#000000',
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  loadingText: {
-    color: '#FFF',
-    marginTop: 15,
-    fontSize: 16,
-    fontWeight: 'bold',
-    textShadowColor: 'rgba(255, 255, 255, 0.8)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 10
-  }
+  container: { flex: 1, backgroundColor: '#000000' },
+  loadingContainer: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' },
+  loadingText: { color: '#FFF', marginTop: 15, fontSize: 16, fontWeight: 'bold' },
+  webFallbackContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 30 },
+  webTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold', marginBottom: 10, textShadowColor: 'rgba(255,255,255,0.8)', textShadowRadius: 10 },
+  webSubtitle: { color: 'rgba(255,255,255,0.6)', textAlign: 'center', fontSize: 14, lineHeight: 22, marginBottom: 25 },
+  callDetails: { color: '#0095F6', fontSize: 16, fontWeight: '600', marginBottom: 30 },
+  btnRow: { marginTop: 20 },
+  hangupBtn: { backgroundColor: '#ED4956', color: '#FFF', paddingHorizontal: 30, paddingVertical: 14, borderRadius: 25, fontWeight: 'bold', overflow: 'hidden', cursor: 'pointer' }
 });
