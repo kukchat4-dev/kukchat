@@ -1,79 +1,23 @@
 {
   "expo": {
-    "name": "KuKa Hub",
-    "slug": "kuka-hub",
+    "name": "Vault",
+    "slug": "vault",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "kukahub",
-    "userInterfaceStyle": "dark",
-    "splash": {
-      "image": "./assets/images/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#000000"
-    },
+    "scheme": "vaultapp",
+    "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.sourabh.kukahub",
-      "infoPlist": {
-        "UIBackgroundModes": [
-          "audio",
-          "voip",
-          "fetch"
-        ]
-      }
+      "supportsTablet": true
     },
     "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000000"
-      },
-      "package": "com.sourabh.kukahub",
-      "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.BLUETOOTH",
-        "android.permission.BLUETOOTH_CONNECT",
-        "android.permission.WAKE_LOCK",
-        "android.permission.VIBRATE",
-        "android.permission.SYSTEM_ALERT_WINDOW"
-      ]
+      "package": "com.sourabh.vault"
     },
     "web": {
       "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "output": "static"
     },
     "plugins": [
-      "expo-router",
-      [
-        "expo-camera",
-        {
-          "cameraPermission": "Allow KuKa Hub to access your camera for secure video calls and encrypted media uploads."
-        }
-      ],
-      [
-        "expo-av",
-        {
-          "microphonePermission": "Allow KuKa Hub to access your microphone for secure audio calls and voice notes."
-        }
-      ],
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "Allow KuKa Hub to access your photos to update your secure vault profile and send encrypted images."
-        }
-      ],
-      [
-        "@zegocloud/zego-uikit-prebuilt-call-rn",
-        {
-          "ios": {
-            "appleTeamId": "YOUR_APPLE_TEAM_ID"
-          }
-        }
-      ]
+      "expo-router"
     ],
     "experiments": {
       "typedRoutes": true
